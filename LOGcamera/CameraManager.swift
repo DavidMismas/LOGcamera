@@ -89,6 +89,20 @@ enum CaptureStabilizationMode: String, CaseIterable, Identifiable {
 }
 
 final class CameraManager: NSObject, ObservableObject {
+    private enum SettingsKey {
+        static let selectedFrameRate = "camera.selectedFrameRate"
+        static let whiteBalanceLockedDuringRecording = "camera.whiteBalanceLockedDuringRecording"
+        static let exposureLockedDuringRecording = "camera.exposureLockedDuringRecording"
+        static let selectedStabilizationMode = "camera.selectedStabilizationMode"
+        static let recordingBitrateMbps = "camera.recordingBitrateMbps"
+        static let usesCustomBitrate = "camera.usesCustomBitrate"
+        static let exposureBias = "camera.exposureBias"
+        static let whiteBalanceTemperature = "camera.whiteBalanceTemperature"
+        static let usesManualWhiteBalance = "camera.usesManualWhiteBalance"
+        static let manualFocusEnabled = "camera.manualFocusEnabled"
+        static let manualFocusPosition = "camera.manualFocusPosition"
+    }
+
     static let supportedFrameRates = [24, 25, 30, 60, 120]
     static let supportedBitratesMbps: [Double] = [30, 50, 80]
 
@@ -111,10 +125,18 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var whiteBalanceTemperature = 5600.0
     @Published private(set) var usesManualWhiteBalance = false
 
-    @Published var selectedFrameRate = 30
-    @Published var whiteBalanceLockedDuringRecording = true
-    @Published var exposureLockedDuringRecording = true
-    @Published var selectedStabilizationMode: CaptureStabilizationMode = .off
+    @Published var selectedFrameRate = 30 {
+        didSet { UserDefaults.standard.set(selectedFrameRate, forKey: SettingsKey.selectedFrameRate) }
+    }
+    @Published var whiteBalanceLockedDuringRecording = true {
+        didSet { UserDefaults.standard.set(whiteBalanceLockedDuringRecording, forKey: SettingsKey.whiteBalanceLockedDuringRecording) }
+    }
+    @Published var exposureLockedDuringRecording = true {
+        didSet { UserDefaults.standard.set(exposureLockedDuringRecording, forKey: SettingsKey.exposureLockedDuringRecording) }
+    }
+    @Published var selectedStabilizationMode: CaptureStabilizationMode = .off {
+        didSet { UserDefaults.standard.set(selectedStabilizationMode.rawValue, forKey: SettingsKey.selectedStabilizationMode) }
+    }
     @Published private(set) var recordingBitrateMbps = 30.0
     @Published private(set) var usesCustomBitrate = false
 
@@ -184,7 +206,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        recordingBitrateMbps = defaultBitrateMbps(for: selectedFrameRate)
+        restorePersistedSettings()
         checkPermissions()
     }
 
@@ -204,6 +226,7 @@ final class CameraManager: NSObject, ObservableObject {
         selectedFrameRate = fps
         if !usesCustomBitrate {
             recordingBitrateMbps = defaultBitrateMbps(for: fps)
+            UserDefaults.standard.set(recordingBitrateMbps, forKey: SettingsKey.recordingBitrateMbps)
         }
         reconfigureActiveLens()
     }
@@ -217,11 +240,17 @@ final class CameraManager: NSObject, ObservableObject {
         guard let supportedValue = Self.supportedBitratesMbps.first(where: { abs($0 - value) < 0.001 }) else { return }
         recordingBitrateMbps = supportedValue
         usesCustomBitrate = true
+        let defaults = UserDefaults.standard
+        defaults.set(recordingBitrateMbps, forKey: SettingsKey.recordingBitrateMbps)
+        defaults.set(usesCustomBitrate, forKey: SettingsKey.usesCustomBitrate)
     }
 
     func resetRecordingBitrateToDefault() {
         usesCustomBitrate = false
         recordingBitrateMbps = defaultBitrateMbps(for: selectedFrameRate)
+        let defaults = UserDefaults.standard
+        defaults.set(recordingBitrateMbps, forKey: SettingsKey.recordingBitrateMbps)
+        defaults.set(usesCustomBitrate, forKey: SettingsKey.usesCustomBitrate)
     }
 
     func switchLens(to lensID: String) {
@@ -249,6 +278,7 @@ final class CameraManager: NSObject, ObservableObject {
     func setExposureBias(_ value: Float) {
         let clamped = min(max(value, exposureBiasRange.lowerBound), exposureBiasRange.upperBound)
         exposureBias = clamped
+        UserDefaults.standard.set(Double(clamped), forKey: SettingsKey.exposureBias)
 
         sessionQueue.async {
             guard let device = self.videoInput?.device ?? self.activeDevice else { return }
@@ -266,6 +296,9 @@ final class CameraManager: NSObject, ObservableObject {
         let clamped = min(max(value, whiteBalanceTemperatureRange.lowerBound), whiteBalanceTemperatureRange.upperBound)
         whiteBalanceTemperature = clamped
         usesManualWhiteBalance = true
+        let defaults = UserDefaults.standard
+        defaults.set(whiteBalanceTemperature, forKey: SettingsKey.whiteBalanceTemperature)
+        defaults.set(usesManualWhiteBalance, forKey: SettingsKey.usesManualWhiteBalance)
 
         sessionQueue.async {
             guard let device = self.videoInput?.device ?? self.activeDevice else { return }
@@ -281,6 +314,8 @@ final class CameraManager: NSObject, ObservableObject {
 
     func setWhiteBalanceAuto() {
         usesManualWhiteBalance = false
+        let defaults = UserDefaults.standard
+        defaults.set(usesManualWhiteBalance, forKey: SettingsKey.usesManualWhiteBalance)
 
         sessionQueue.async {
             guard let device = self.videoInput?.device ?? self.activeDevice else { return }
@@ -296,6 +331,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     func setManualFocusEnabled(_ isEnabled: Bool) {
         manualFocusEnabled = isEnabled
+        UserDefaults.standard.set(manualFocusEnabled, forKey: SettingsKey.manualFocusEnabled)
         sessionQueue.async {
             guard let device = self.videoInput?.device ?? self.activeDevice else { return }
             do {
@@ -321,6 +357,9 @@ final class CameraManager: NSObject, ObservableObject {
         if !manualFocusEnabled {
             manualFocusEnabled = true
         }
+        let defaults = UserDefaults.standard
+        defaults.set(Double(manualFocusPosition), forKey: SettingsKey.manualFocusPosition)
+        defaults.set(manualFocusEnabled, forKey: SettingsKey.manualFocusEnabled)
 
         sessionQueue.async {
             guard let device = self.videoInput?.device ?? self.activeDevice,
@@ -1033,6 +1072,57 @@ final class CameraManager: NSObject, ObservableObject {
             greenGain: min(max(gains.greenGain, 1.0), device.maxWhiteBalanceGain),
             blueGain: min(max(gains.blueGain, 1.0), device.maxWhiteBalanceGain)
         )
+    }
+
+    private func restorePersistedSettings() {
+        let defaults = UserDefaults.standard
+
+        if let savedFrameRate = defaults.object(forKey: SettingsKey.selectedFrameRate) as? Int,
+           Self.supportedFrameRates.contains(savedFrameRate) {
+            selectedFrameRate = savedFrameRate
+        }
+
+        if let rawStabilization = defaults.string(forKey: SettingsKey.selectedStabilizationMode),
+           let stabilization = CaptureStabilizationMode(rawValue: rawStabilization) {
+            selectedStabilizationMode = stabilization
+        }
+
+        if defaults.object(forKey: SettingsKey.whiteBalanceLockedDuringRecording) != nil {
+            whiteBalanceLockedDuringRecording = defaults.bool(forKey: SettingsKey.whiteBalanceLockedDuringRecording)
+        }
+
+        if defaults.object(forKey: SettingsKey.exposureLockedDuringRecording) != nil {
+            exposureLockedDuringRecording = defaults.bool(forKey: SettingsKey.exposureLockedDuringRecording)
+        }
+
+        if let savedExposureBias = defaults.object(forKey: SettingsKey.exposureBias) as? Double {
+            exposureBias = Float(savedExposureBias)
+        }
+
+        if let savedWhiteBalanceTemperature = defaults.object(forKey: SettingsKey.whiteBalanceTemperature) as? Double {
+            whiteBalanceTemperature = savedWhiteBalanceTemperature
+        }
+
+        if defaults.object(forKey: SettingsKey.usesManualWhiteBalance) != nil {
+            usesManualWhiteBalance = defaults.bool(forKey: SettingsKey.usesManualWhiteBalance)
+        }
+
+        if defaults.object(forKey: SettingsKey.manualFocusEnabled) != nil {
+            manualFocusEnabled = defaults.bool(forKey: SettingsKey.manualFocusEnabled)
+        }
+
+        if let savedManualFocusPosition = defaults.object(forKey: SettingsKey.manualFocusPosition) as? Double {
+            manualFocusPosition = Float(savedManualFocusPosition)
+        }
+
+        usesCustomBitrate = defaults.bool(forKey: SettingsKey.usesCustomBitrate)
+        if usesCustomBitrate,
+           let savedBitrate = defaults.object(forKey: SettingsKey.recordingBitrateMbps) as? Double,
+           Self.supportedBitratesMbps.contains(where: { abs($0 - savedBitrate) < 0.001 }) {
+            recordingBitrateMbps = savedBitrate
+        } else {
+            recordingBitrateMbps = defaultBitrateMbps(for: selectedFrameRate)
+        }
     }
 
     private func updateFocus(at point: CGPoint, shouldLockAfterFocus: Bool) {

@@ -135,17 +135,14 @@ private struct CameraScreen: View {
                     .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 16))
             }
 
-            HStack(alignment: .bottom) {
-                lensPickerButton
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Spacer()
+            ZStack(alignment: .bottom) {
+                HStack(alignment: .bottom) {
+                    lensPickerButton
+                    Spacer()
+                    quickAdjustments
+                }
 
                 recordButton
-                    .frame(maxWidth: .infinity, alignment: .center)
-
-                quickAdjustments
-                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
     }
@@ -182,6 +179,7 @@ private struct CameraScreen: View {
                 controlsButton
             }
         }
+        .padding(.bottom, 54)
     }
 
     private var exposureQuickPanel: some View {
@@ -229,7 +227,8 @@ private struct CameraScreen: View {
                     get: { cameraManager.whiteBalanceTemperature },
                     set: { cameraManager.setWhiteBalanceTemperature($0) }
                 ),
-                in: cameraManager.whiteBalanceTemperatureRange
+                in: cameraManager.whiteBalanceTemperatureRange,
+                step: 10
             )
             .tint(AppTheme.accent)
 
