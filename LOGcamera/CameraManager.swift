@@ -88,6 +88,22 @@ enum CaptureStabilizationMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum PreviewLookMode: String, CaseIterable, Identifiable {
+    case log
+    case rec709
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .log:
+            return "Log"
+        case .rec709:
+            return "Rec.709"
+        }
+    }
+}
+
 final class CameraManager: NSObject, ObservableObject {
     private enum SettingsKey {
         static let selectedFrameRate = "camera.selectedFrameRate"
@@ -101,6 +117,7 @@ final class CameraManager: NSObject, ObservableObject {
         static let usesManualWhiteBalance = "camera.usesManualWhiteBalance"
         static let manualFocusEnabled = "camera.manualFocusEnabled"
         static let manualFocusPosition = "camera.manualFocusPosition"
+        static let previewLookMode = "camera.previewLookMode"
     }
 
     static let supportedFrameRates = [24, 25, 30, 60, 120]
@@ -136,6 +153,11 @@ final class CameraManager: NSObject, ObservableObject {
     }
     @Published var selectedStabilizationMode: CaptureStabilizationMode = .off {
         didSet { UserDefaults.standard.set(selectedStabilizationMode.rawValue, forKey: SettingsKey.selectedStabilizationMode) }
+    }
+    @Published var previewLookMode: PreviewLookMode = .log {
+        didSet {
+            UserDefaults.standard.set(previewLookMode.rawValue, forKey: SettingsKey.previewLookMode)
+        }
     }
     @Published private(set) var recordingBitrateMbps = 30.0
     @Published private(set) var usesCustomBitrate = false
@@ -203,6 +225,11 @@ final class CameraManager: NSObject, ObservableObject {
     private var currentRecordingURL: URL?
     private var isWritingSessionStarted = false
     private var currentCaptureRotationAngle: CGFloat = 0
+    private let previewFrameSubject = PassthroughSubject<PreviewFrame, Never>()
+
+    var previewFramePublisher: AnyPublisher<PreviewFrame, Never> {
+        previewFrameSubject.eraseToAnyPublisher()
+    }
 
     override init() {
         super.init()
@@ -234,6 +261,10 @@ final class CameraManager: NSObject, ObservableObject {
     func selectStabilizationMode(_ mode: CaptureStabilizationMode) {
         selectedStabilizationMode = mode
         reconfigureActiveLens()
+    }
+
+    func selectPreviewLookMode(_ mode: PreviewLookMode) {
+        previewLookMode = mode
     }
 
     func setRecordingBitrateMbps(_ value: Double) {
@@ -1087,6 +1118,11 @@ final class CameraManager: NSObject, ObservableObject {
             selectedStabilizationMode = stabilization
         }
 
+        if let rawPreviewLook = defaults.string(forKey: SettingsKey.previewLookMode),
+           let previewLook = PreviewLookMode(rawValue: rawPreviewLook) {
+            previewLookMode = previewLook
+        }
+
         if defaults.object(forKey: SettingsKey.whiteBalanceLockedDuringRecording) != nil {
             whiteBalanceLockedDuringRecording = defaults.bool(forKey: SettingsKey.whiteBalanceLockedDuringRecording)
         }
@@ -1275,6 +1311,24 @@ final class CameraManager: NSObject, ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: dismissWorkItem)
         }
     }
+
+    private func processPreviewSampleBufferIfNeeded(_ sampleBuffer: CMSampleBuffer) {
+        guard previewLookMode == .rec709,
+              colorProfile != .unavailable else { return }
+
+        let profile = colorProfile
+        var copiedSampleBuffer: CMSampleBuffer?
+        guard CMSampleBufferCreateCopy(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleBufferOut: &copiedSampleBuffer
+        ) == noErr,
+        let copiedSampleBuffer else {
+            return
+        }
+
+        previewFrameSubject.send(PreviewFrame(sampleBuffer: copiedSampleBuffer, profile: profile))
+    }
 }
 
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
@@ -1282,6 +1336,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
                                    didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
         if output === self.videoDataOutput {
+            self.processPreviewSampleBufferIfNeeded(sampleBuffer)
             self.appendVideoSampleBuffer(sampleBuffer)
         } else if output === self.audioDataOutput {
             self.appendAudioSampleBuffer(sampleBuffer)

@@ -51,16 +51,6 @@ private struct CameraScreen: View {
                 Spacer(minLength: 0)
             }
             .ignoresSafeArea(edges: .horizontal)
-
-            if showsControlMenu {
-                VStack {
-                    Spacer()
-                    controlsMenu
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 118)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
         }
         .photosPicker(
             isPresented: $showsGalleryPicker,
@@ -68,7 +58,9 @@ private struct CameraScreen: View {
             matching: .videos,
             preferredItemEncoding: .automatic
         )
-        .animation(.spring(response: 0.28, dampingFraction: 0.9), value: showsControlMenu)
+        .fullScreenCover(isPresented: $showsControlMenu) {
+            CameraSettingsView(cameraManager: cameraManager)
+        }
     }
 
     private var topBar: some View {
@@ -226,220 +218,6 @@ private struct CameraScreen: View {
         .disabled(cameraManager.isRecording)
     }
 
-    private var controlsMenu: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Text("Camera Controls")
-                    .font(.system(size: 16, weight: .bold))
-
-                Spacer()
-
-                Button {
-                    showsControlMenu = false
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 32, height: 32)
-                        .background(Color.white.opacity(0.12), in: Circle())
-                }
-                .buttonStyle(.plain)
-            }
-
-            fpsRow
-            stabilizationRow
-            lockRow
-            controlPanel
-        }
-        .padding(14)
-        .background(.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 24))
-    }
-
-    private var fpsRow: some View {
-        HStack(spacing: 8) {
-            ForEach(CameraManager.supportedFrameRates, id: \.self) { fps in
-                Button {
-                    cameraManager.selectFrameRate(fps)
-                } label: {
-                    Text("\(fps)")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(cameraManager.selectedFrameRate == fps ? Color.black : Color.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 38)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(cameraManager.selectedFrameRate == fps ? AppTheme.accent : Color.white.opacity(0.12))
-                        )
-                }
-                .buttonStyle(.plain)
-                .disabled(cameraManager.isRecording)
-            }
-        }
-    }
-
-    private var stabilizationRow: some View {
-        HStack(spacing: 8) {
-            ForEach(CaptureStabilizationMode.allCases) { mode in
-                Button {
-                    cameraManager.selectStabilizationMode(mode)
-                } label: {
-                    Text(mode.title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(cameraManager.selectedStabilizationMode == mode ? Color.black : Color.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 38)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(cameraManager.selectedStabilizationMode == mode ? AppTheme.accent : Color.white.opacity(0.12))
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private var lockRow: some View {
-        HStack(spacing: 8) {
-            lockChip(
-                title: "WB Lock REC",
-                isOn: cameraManager.whiteBalanceLockedDuringRecording
-            ) {
-                cameraManager.whiteBalanceLockedDuringRecording.toggle()
-            }
-
-            lockChip(
-                title: "AE Lock REC",
-                isOn: cameraManager.exposureLockedDuringRecording
-            ) {
-                cameraManager.exposureLockedDuringRecording.toggle()
-            }
-
-            if cameraManager.supportsManualFocus {
-                lockChip(
-                    title: "Manual Focus",
-                    isOn: cameraManager.manualFocusEnabled
-                ) {
-                    cameraManager.setManualFocusEnabled(!cameraManager.manualFocusEnabled)
-                }
-            }
-        }
-    }
-
-    private var controlPanel: some View {
-        VStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("White Balance")
-                        .font(.system(size: 13, weight: .semibold))
-                    Spacer()
-                    Text(cameraManager.whiteBalanceLabel)
-                        .font(.system(size: 13, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.72))
-                }
-
-                Slider(
-                    value: Binding(
-                        get: { cameraManager.whiteBalanceTemperature },
-                        set: { cameraManager.setWhiteBalanceTemperature($0) }
-                    ),
-                    in: cameraManager.whiteBalanceTemperatureRange,
-                    step: 10
-                )
-                .tint(AppTheme.accent)
-
-                HStack {
-                    Text("2500K")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.52))
-                    Spacer()
-                    Button("Auto") {
-                        cameraManager.setWhiteBalanceAuto()
-                    }
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(AppTheme.accent)
-                    .buttonStyle(.plain)
-                    Spacer()
-                    Text("9000K")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.52))
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Bitrate")
-                        .font(.system(size: 13, weight: .semibold))
-                    Spacer()
-                    Text(cameraManager.recordingBitrateLabel)
-                        .font(.system(size: 13, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.72))
-                }
-
-                HStack(spacing: 8) {
-                    ForEach(CameraManager.supportedBitratesMbps, id: \.self) { bitrate in
-                        Button {
-                            cameraManager.setRecordingBitrateMbps(bitrate)
-                        } label: {
-                            Text(String(format: "%.0f", bitrate))
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(cameraManager.recordingBitrateMbps == bitrate ? Color.black : Color.white)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 38)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(cameraManager.recordingBitrateMbps == bitrate ? AppTheme.accent : Color.white.opacity(0.12))
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                HStack {
-                    Text(cameraManager.usesCustomBitrate ? "Custom bitrate" : "Auto bitrate")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.72))
-
-                    Spacer()
-
-                    Button(cameraManager.usesCustomBitrate ? "Auto" : "Default") {
-                        cameraManager.resetRecordingBitrateToDefault()
-                    }
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(AppTheme.accent)
-                    .buttonStyle(.plain)
-                }
-            }
-
-            if cameraManager.supportsManualFocus {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Focus")
-                            .font(.system(size: 13, weight: .semibold))
-                        Spacer()
-                        Text(cameraManager.manualFocusEnabled ? String(format: "%.2f", cameraManager.manualFocusPosition) : "AF")
-                            .font(.system(size: 13, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.72))
-                    }
-
-                    Slider(
-                        value: Binding(
-                            get: { Double(cameraManager.manualFocusPosition) },
-                            set: { cameraManager.setManualFocusPosition(Float($0)) }
-                        ),
-                        in: 0...1
-                    )
-                    .tint(AppTheme.accent)
-                    .disabled(!cameraManager.manualFocusEnabled)
-                }
-            }
-
-            Text(cameraManager.manualFocusEnabled ? "Manual focus stays locked while recording." : "Tap to focus and expose. Long-press to lock focus and exposure.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.72))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
     private var recordButton: some View {
         Button {
             if cameraManager.isRecording {
@@ -470,6 +248,7 @@ private struct CameraScreen: View {
 
     private var controlsButton: some View {
         Button {
+            showsExposurePanel = false
             showsControlMenu.toggle()
         } label: {
             Image(systemName: "slider.horizontal.3")
@@ -489,22 +268,6 @@ private struct CameraScreen: View {
         cameraManager.availableLenses.first(where: { $0.id == cameraManager.activeLensID })?.shortName ?? "1x"
     }
 
-    private func lockChip(title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isOn ? Color.black : Color.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(isOn ? AppTheme.accent : Color.white.opacity(0.12))
-                )
-        }
-        .buttonStyle(.plain)
-    }
-
     private func quickAdjustButton(title: String, isActive: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
@@ -515,6 +278,299 @@ private struct CameraScreen: View {
                 .overlay(
                     Circle()
                         .stroke(Color.white.opacity(isActive ? 0 : 0.14), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct CameraSettingsView: View {
+    @ObservedObject var cameraManager: CameraManager
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    header
+                    previewSection
+                    captureSection
+                    lockSection
+                    whiteBalanceSection
+                    bitrateSection
+
+                    if cameraManager.supportsManualFocus {
+                        focusSection
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 32)
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Settings")
+                    .font(.system(size: 30, weight: .bold))
+
+                Text(cameraManager.captureSummaryText)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+
+            Spacer()
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(Color.white.opacity(0.1), in: Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.top, 10)
+    }
+
+    private var previewSection: some View {
+        settingsCard(title: "Preview", subtitle: "Snemanje ostane Apple Log.") {
+            HStack(spacing: 8) {
+                ForEach(PreviewLookMode.allCases) { mode in
+                    selectionButton(
+                        title: mode.title,
+                        isSelected: cameraManager.previewLookMode == mode
+                    ) {
+                        cameraManager.selectPreviewLookMode(mode)
+                    }
+                }
+            }
+        }
+    }
+
+    private var captureSection: some View {
+        settingsCard(title: "Capture") {
+            VStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    ForEach(CameraManager.supportedFrameRates, id: \.self) { fps in
+                        selectionButton(
+                            title: "\(fps)",
+                            isSelected: cameraManager.selectedFrameRate == fps
+                        ) {
+                            cameraManager.selectFrameRate(fps)
+                        }
+                        .disabled(cameraManager.isRecording)
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    ForEach(CaptureStabilizationMode.allCases) { mode in
+                        selectionButton(
+                            title: mode.title,
+                            isSelected: cameraManager.selectedStabilizationMode == mode
+                        ) {
+                            cameraManager.selectStabilizationMode(mode)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var lockSection: some View {
+        settingsCard(title: "Locks") {
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    lockChip(
+                        title: "WB Lock REC",
+                        isOn: cameraManager.whiteBalanceLockedDuringRecording
+                    ) {
+                        cameraManager.whiteBalanceLockedDuringRecording.toggle()
+                    }
+
+                    lockChip(
+                        title: "AE Lock REC",
+                        isOn: cameraManager.exposureLockedDuringRecording
+                    ) {
+                        cameraManager.exposureLockedDuringRecording.toggle()
+                    }
+                }
+
+                if cameraManager.supportsManualFocus {
+                    HStack(spacing: 8) {
+                        lockChip(
+                            title: "Manual Focus",
+                            isOn: cameraManager.manualFocusEnabled
+                        ) {
+                            cameraManager.setManualFocusEnabled(!cameraManager.manualFocusEnabled)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var whiteBalanceSection: some View {
+        settingsCard(title: "White Balance") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(cameraManager.whiteBalanceLabel)
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.82))
+
+                    Spacer()
+
+                    Button("Auto") {
+                        cameraManager.setWhiteBalanceAuto()
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
+                    .buttonStyle(.plain)
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { cameraManager.whiteBalanceTemperature },
+                        set: { cameraManager.setWhiteBalanceTemperature($0) }
+                    ),
+                    in: cameraManager.whiteBalanceTemperatureRange,
+                    step: 10
+                )
+                .tint(AppTheme.accent)
+
+                HStack {
+                    Text("2500K")
+                    Spacer()
+                    Text("9000K")
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.52))
+            }
+        }
+    }
+
+    private var bitrateSection: some View {
+        settingsCard(title: "Bitrate") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    ForEach(CameraManager.supportedBitratesMbps, id: \.self) { bitrate in
+                        selectionButton(
+                            title: String(format: "%.0f Mb/s", bitrate),
+                            isSelected: cameraManager.recordingBitrateMbps == bitrate
+                        ) {
+                            cameraManager.setRecordingBitrateMbps(bitrate)
+                        }
+                    }
+                }
+
+                HStack {
+                    Text(cameraManager.usesCustomBitrate ? "Custom bitrate" : "Auto bitrate")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.7))
+
+                    Spacer()
+
+                    Button(cameraManager.usesCustomBitrate ? "Auto" : "Default") {
+                        cameraManager.resetRecordingBitrateToDefault()
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var focusSection: some View {
+        settingsCard(title: "Focus") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(cameraManager.manualFocusEnabled ? String(format: "%.2f", cameraManager.manualFocusPosition) : "AF")
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.82))
+                    Spacer()
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { Double(cameraManager.manualFocusPosition) },
+                        set: { cameraManager.setManualFocusPosition(Float($0)) }
+                    ),
+                    in: 0...1
+                )
+                .tint(AppTheme.accent)
+                .disabled(!cameraManager.manualFocusEnabled)
+
+                Text(cameraManager.manualFocusEnabled ? "Manual focus stays locked while recording." : "Tap to focus and expose. Long-press to lock focus and exposure.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+        }
+    }
+
+    private func settingsCard<Content: View>(title: String,
+                                             subtitle: String? = nil,
+                                             @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 17, weight: .bold))
+
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.64))
+                }
+            }
+
+            content()
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(Color.white.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func selectionButton(title: String,
+                                 isSelected: Bool,
+                                 action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isSelected ? Color.black : Color.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 42)
+                .background(
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(isSelected ? AppTheme.accent : Color.white.opacity(0.1))
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func lockChip(title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isOn ? Color.black : Color.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(isOn ? AppTheme.accent : Color.white.opacity(0.1))
                 )
         }
         .buttonStyle(.plain)

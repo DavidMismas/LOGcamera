@@ -1,5 +1,7 @@
 import SwiftUI
 import AVFoundation
+import Combine
+import MetalKit
 
 struct CameraPreviewView: UIViewRepresentable {
     @ObservedObject var cameraManager: CameraManager
@@ -8,6 +10,8 @@ struct CameraPreviewView: UIViewRepresentable {
         let view = PreviewView()
         view.videoPreviewLayer.session = cameraManager.session
         view.videoPreviewLayer.videoGravity = .resizeAspectFill
+        view.bindPreviewFrames(to: cameraManager)
+        view.setPreviewLookMode(cameraManager.previewLookMode)
         view.onFocusSelection = { [weak cameraManager] capturePoint, previewPoint, shouldLock in
             guard let cameraManager else { return }
             cameraManager.showFocusFeedback(at: previewPoint, isLocked: shouldLock)
@@ -22,6 +26,8 @@ struct CameraPreviewView: UIViewRepresentable {
 
     func updateUIView(_ uiView: PreviewView, context: Context) {
         uiView.videoPreviewLayer.session = cameraManager.session
+        uiView.bindPreviewFrames(to: cameraManager)
+        uiView.setPreviewLookMode(cameraManager.previewLookMode)
         uiView.onFocusSelection = { [weak cameraManager] capturePoint, previewPoint, shouldLock in
             guard let cameraManager else { return }
             cameraManager.showFocusFeedback(at: previewPoint, isLocked: shouldLock)
@@ -44,6 +50,12 @@ final class PreviewView: UIView {
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var previewRotationObservation: NSKeyValueObservation?
     private var activeDevice: AVCaptureDevice?
+    private weak var boundCameraManager: CameraManager?
+    private var previewFrameCancellable: AnyCancellable?
+    private let processedPreviewView = MTKView(frame: .zero)
+    private var previewRenderer: MetalPreviewRenderer?
+    private var isProcessedPreviewEnabled = false
+    private var currentPreviewRotationAngle: CGFloat = 0
 
     private lazy var tapGestureRecognizer = UITapGestureRecognizer(
         target: self,
@@ -69,12 +81,19 @@ final class PreviewView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        setupProcessedPreviewView()
         setupGestures()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        setupProcessedPreviewView()
         setupGestures()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateProcessedPreviewLayout()
     }
 
     override func didMoveToWindow() {
@@ -90,6 +109,24 @@ final class PreviewView: UIView {
         guard activeDevice?.uniqueID != device?.uniqueID else { return }
         activeDevice = device
         setupRotationIfPossible()
+        updateProcessedPreviewLayout()
+    }
+
+    func bindPreviewFrames(to cameraManager: CameraManager) {
+        guard boundCameraManager !== cameraManager else { return }
+
+        boundCameraManager = cameraManager
+        previewFrameCancellable = cameraManager.previewFramePublisher.sink { [weak self] frame in
+            self?.previewRenderer?.enqueue(frame)
+        }
+    }
+
+    func setPreviewLookMode(_ mode: PreviewLookMode) {
+        isProcessedPreviewEnabled = mode == .rec709
+        if !isProcessedPreviewEnabled {
+            previewRenderer?.clear()
+        }
+        processedPreviewView.isHidden = !isProcessedPreviewEnabled
     }
 
     private func setupGestures() {
@@ -97,6 +134,15 @@ final class PreviewView: UIView {
         tapGestureRecognizer.require(toFail: longPressGestureRecognizer)
         addGestureRecognizer(tapGestureRecognizer)
         addGestureRecognizer(longPressGestureRecognizer)
+    }
+
+    private func setupProcessedPreviewView() {
+        processedPreviewView.clipsToBounds = true
+        processedPreviewView.isUserInteractionEnabled = false
+        processedPreviewView.backgroundColor = .clear
+        processedPreviewView.isHidden = true
+        previewRenderer = MetalPreviewRenderer(view: processedPreviewView)
+        addSubview(processedPreviewView)
     }
 
     private func setupRotationIfPossible() {
@@ -128,6 +174,8 @@ final class PreviewView: UIView {
         guard let connection = videoPreviewLayer.connection,
               connection.isVideoRotationAngleSupported(angle) else { return }
         connection.videoRotationAngle = angle
+        currentPreviewRotationAngle = angle
+        updateProcessedPreviewLayout()
     }
 
     private func teardownRotation() {
@@ -161,5 +209,23 @@ final class PreviewView: UIView {
     @objc private func handleLongPressToLock(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         onFocusSelection?(capturePoint(from: gesture), previewPoint(from: gesture), true)
+    }
+
+    private func updateProcessedPreviewLayout() {
+        let normalizedAngle = abs(Int(currentPreviewRotationAngle.rounded())) % 360
+        let swapsAxes = normalizedAngle == 90 || normalizedAngle == 270
+        let baseSize = bounds.size
+        let rotatedSize = swapsAxes
+            ? CGSize(width: baseSize.height, height: baseSize.width)
+            : baseSize
+
+        processedPreviewView.bounds = CGRect(origin: .zero, size: rotatedSize)
+        processedPreviewView.center = CGPoint(x: bounds.midX, y: bounds.midY)
+
+        var transform = CGAffineTransform(rotationAngle: currentPreviewRotationAngle * (.pi / 180))
+        if activeDevice?.position == .front {
+            transform = transform.scaledBy(x: -1, y: 1)
+        }
+        processedPreviewView.transform = transform
     }
 }
