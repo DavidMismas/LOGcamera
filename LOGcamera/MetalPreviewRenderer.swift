@@ -12,8 +12,10 @@ final class MetalPreviewRenderer: NSObject, MTKViewDelegate {
     private let ciContext: CIContext
     private let lutProcessor = PreviewLUTProcessor()
     private let stateQueue = DispatchQueue(label: "com.logcamera.metalPreviewState")
+    private let smoothingAmount: Float = 0.22
 
     private var latestFrame: PreviewFrame?
+    private var previousRenderedImage: CIImage?
 
     init?(view: MTKView) {
         guard let device = MTLCreateSystemDefaultDevice() else { return nil }
@@ -46,6 +48,7 @@ final class MetalPreviewRenderer: NSObject, MTKViewDelegate {
     func clear() {
         stateQueue.async {
             self.latestFrame = nil
+            self.previousRenderedImage = nil
         }
     }
 
@@ -68,8 +71,10 @@ final class MetalPreviewRenderer: NSObject, MTKViewDelegate {
 
         guard let outputImage = filter.outputImage else { return }
 
+        let smoothedImage = blendedImage(for: outputImage)
+
         let drawableBounds = CGRect(origin: .zero, size: view.drawableSize)
-        let scaledImage = outputImage.transformed(by: aspectFillTransform(for: outputImage.extent, in: drawableBounds))
+        let scaledImage = smoothedImage.transformed(by: aspectFillTransform(for: smoothedImage.extent, in: drawableBounds))
 
         ciContext.render(
             scaledImage,
@@ -83,6 +88,27 @@ final class MetalPreviewRenderer: NSObject, MTKViewDelegate {
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    private func blendedImage(for currentImage: CIImage) -> CIImage {
+        let previousImage = stateQueue.sync { previousRenderedImage }
+        let outputImage: CIImage
+
+        if let previousImage,
+           let transition = CIFilter(name: "CIDissolveTransition") {
+            transition.setValue(previousImage.cropped(to: currentImage.extent), forKey: kCIInputImageKey)
+            transition.setValue(currentImage, forKey: kCIInputTargetImageKey)
+            transition.setValue(smoothingAmount, forKey: kCIInputTimeKey)
+            outputImage = transition.outputImage?.cropped(to: currentImage.extent) ?? currentImage
+        } else {
+            outputImage = currentImage
+        }
+
+        stateQueue.async {
+            self.previousRenderedImage = outputImage
+        }
+
+        return outputImage
+    }
 
     private func aspectFillTransform(for sourceRect: CGRect, in targetRect: CGRect) -> CGAffineTransform {
         guard sourceRect.width > 0,
