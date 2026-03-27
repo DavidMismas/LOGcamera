@@ -40,7 +40,6 @@ private struct CameraScreen: View {
     @State private var showsGalleryPicker = false
     @State private var selectedGalleryItem: PhotosPickerItem?
     @State private var showsExposurePanel = false
-    @State private var showsWhiteBalancePanel = false
 
     var body: some View {
         ZStack {
@@ -153,33 +152,15 @@ private struct CameraScreen: View {
                 exposureQuickPanel
             }
 
-            if showsWhiteBalancePanel {
-                whiteBalanceQuickPanel
+            quickAdjustButton(title: "EXP", isActive: showsExposurePanel) {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    showsExposurePanel.toggle()
+                }
             }
 
-            HStack(spacing: 10) {
-                quickAdjustButton(title: "EXP", isActive: showsExposurePanel) {
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        showsExposurePanel.toggle()
-                        if showsExposurePanel {
-                            showsWhiteBalancePanel = false
-                        }
-                    }
-                }
-
-                quickAdjustButton(title: "WB", isActive: showsWhiteBalancePanel) {
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        showsWhiteBalancePanel.toggle()
-                        if showsWhiteBalancePanel {
-                            showsExposurePanel = false
-                        }
-                    }
-                }
-
-                controlsButton
-            }
+            controlsButton
         }
-        .padding(.bottom, 54)
+        .padding(.bottom, 28)
     }
 
     private var exposureQuickPanel: some View {
@@ -203,54 +184,7 @@ private struct CameraScreen: View {
             .tint(AppTheme.accent)
         }
         .padding(12)
-        .frame(width: 188)
-        .background(.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 18))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
-    }
-
-    private var whiteBalanceQuickPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("White Balance")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Text(cameraManager.whiteBalanceLabel)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.72))
-            }
-
-            Slider(
-                value: Binding(
-                    get: { cameraManager.whiteBalanceTemperature },
-                    set: { cameraManager.setWhiteBalanceTemperature($0) }
-                ),
-                in: cameraManager.whiteBalanceTemperatureRange,
-                step: 10
-            )
-            .tint(AppTheme.accent)
-
-            HStack {
-                Text("2500K")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.52))
-                Spacer()
-                Button("Auto") {
-                    cameraManager.setWhiteBalanceAuto()
-                }
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(AppTheme.accent)
-                .buttonStyle(.plain)
-                Spacer()
-                Text("9000K")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.52))
-            }
-        }
-        .padding(12)
-        .frame(width: 188)
+        .frame(width: 268)
         .background(.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 18))
         .overlay(
             RoundedRectangle(cornerRadius: 18)
@@ -393,6 +327,44 @@ private struct CameraScreen: View {
 
     private var controlPanel: some View {
         VStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("White Balance")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Text(cameraManager.whiteBalanceLabel)
+                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { cameraManager.whiteBalanceTemperature },
+                        set: { cameraManager.setWhiteBalanceTemperature($0) }
+                    ),
+                    in: cameraManager.whiteBalanceTemperatureRange,
+                    step: 10
+                )
+                .tint(AppTheme.accent)
+
+                HStack {
+                    Text("2500K")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.52))
+                    Spacer()
+                    Button("Auto") {
+                        cameraManager.setWhiteBalanceAuto()
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
+                    .buttonStyle(.plain)
+                    Spacer()
+                    Text("9000K")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.52))
+                }
+            }
+
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Bitrate")
