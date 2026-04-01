@@ -111,7 +111,7 @@ private struct CameraScreen: View {
             .overlay(alignment: .bottom) {
                 bottomOverlay
                     .padding(.horizontal, 14)
-                    .padding(.bottom, 16)
+                    .padding(.bottom, 8)
             }
     }
 
@@ -129,12 +129,20 @@ private struct CameraScreen: View {
             ZStack(alignment: .bottom) {
                 HStack(alignment: .bottom) {
                     lensPickerButton
+                        .padding(.bottom, 12)
                     Spacer()
                     quickAdjustments
+                        .padding(.bottom, 12)
                 }
 
                 recordButton
+                    .padding(.bottom, 2)
             }
+            .frame(
+                maxWidth: .infinity,
+                minHeight: showsExposurePanel ? 210 : 138,
+                alignment: .bottom
+            )
         }
     }
 
@@ -144,7 +152,7 @@ private struct CameraScreen: View {
                 exposureQuickPanel
             }
 
-            quickAdjustButton(title: "EXP", isActive: showsExposurePanel) {
+            quickAdjustButton(title: "EXP", isActive: showsExposurePanel || isExposureAdjusted) {
                 withAnimation(.easeOut(duration: 0.18)) {
                     showsExposurePanel.toggle()
                 }
@@ -152,7 +160,6 @@ private struct CameraScreen: View {
 
             controlsButton
         }
-        .padding(.bottom, 28)
     }
 
     private var exposureQuickPanel: some View {
@@ -187,7 +194,7 @@ private struct CameraScreen: View {
     private var lensPickerButton: some View {
         Menu {
             ForEach(cameraManager.availableLenses) { lens in
-                Button("\(lens.shortName)  \(lens.displayName)") {
+                Button(lens.shortName) {
                     cameraManager.switchLens(to: lens.id)
                 }
             }
@@ -196,9 +203,11 @@ private struct CameraScreen: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(activeLensShortName)
                         .font(.system(size: 18, weight: .semibold))
-                    Text(cameraManager.activeLensSummary)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.72))
+                    if cameraManager.activeLensSummary.caseInsensitiveCompare(activeLensShortName) != .orderedSame {
+                        Text(cameraManager.activeLensSummary)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
                 }
 
                 Image(systemName: "chevron.up.chevron.down")
@@ -272,7 +281,11 @@ private struct CameraScreen: View {
     }
 
     private var activeLensShortName: String {
-        cameraManager.availableLenses.first(where: { $0.id == cameraManager.activeLensID })?.shortName ?? "1x"
+        cameraManager.availableLenses.first(where: { $0.id == cameraManager.activeLensID })?.shortName ?? "Wide"
+    }
+
+    private var isExposureAdjusted: Bool {
+        abs(cameraManager.exposureBias) > 0.01
     }
 
     private func quickAdjustButton(title: String, isActive: Bool, action: @escaping () -> Void) -> some View {

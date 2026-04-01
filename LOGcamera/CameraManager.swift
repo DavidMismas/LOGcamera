@@ -631,8 +631,8 @@ final class CameraManager: NSObject, ObservableObject {
         case (.back, .builtInUltraWideCamera):
             return LensOption(
                 id: device.uniqueID,
-                displayName: "Ultra",
-                shortName: "0.5x",
+                displayName: "Ultra Wide",
+                shortName: "Ultra Wide",
                 deviceType: device.deviceType,
                 position: device.position,
                 sortOrder: 0
@@ -640,8 +640,8 @@ final class CameraManager: NSObject, ObservableObject {
         case (.back, .builtInWideAngleCamera):
             return LensOption(
                 id: device.uniqueID,
-                displayName: "Main",
-                shortName: "1x",
+                displayName: "Wide",
+                shortName: "Wide",
                 deviceType: device.deviceType,
                 position: device.position,
                 sortOrder: 1
@@ -649,8 +649,8 @@ final class CameraManager: NSObject, ObservableObject {
         case (.back, .builtInTelephotoCamera):
             return LensOption(
                 id: device.uniqueID,
-                displayName: "Zoom",
-                shortName: "2x",
+                displayName: "Tele",
+                shortName: "Tele",
                 deviceType: device.deviceType,
                 position: device.position,
                 sortOrder: 2
@@ -658,7 +658,7 @@ final class CameraManager: NSObject, ObservableObject {
         case (.front, .builtInTrueDepthCamera), (.front, .builtInWideAngleCamera):
             return LensOption(
                 id: device.uniqueID,
-                displayName: "Selfie",
+                displayName: "Front",
                 shortName: "Front",
                 deviceType: device.deviceType,
                 position: device.position,
@@ -667,8 +667,8 @@ final class CameraManager: NSObject, ObservableObject {
         case (.back, .builtInDualWideCamera):
             return LensOption(
                 id: device.uniqueID,
-                displayName: "Back",
-                shortName: "1x",
+                displayName: "Wide",
+                shortName: "Wide",
                 deviceType: device.deviceType,
                 position: device.position,
                 sortOrder: 3
@@ -676,8 +676,8 @@ final class CameraManager: NSObject, ObservableObject {
         case (.back, .builtInDualCamera):
             return LensOption(
                 id: device.uniqueID,
-                displayName: "Back",
-                shortName: "1x",
+                displayName: "Wide",
+                shortName: "Wide",
                 deviceType: device.deviceType,
                 position: device.position,
                 sortOrder: 4
@@ -685,8 +685,8 @@ final class CameraManager: NSObject, ObservableObject {
         case (.back, .builtInTripleCamera):
             return LensOption(
                 id: device.uniqueID,
-                displayName: "Back",
-                shortName: "1x",
+                displayName: "Wide",
+                shortName: "Wide",
                 deviceType: device.deviceType,
                 position: device.position,
                 sortOrder: 5
