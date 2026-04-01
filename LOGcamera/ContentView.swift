@@ -40,6 +40,7 @@ private struct CameraScreen: View {
     @State private var showsGalleryPicker = false
     @State private var selectedGalleryItem: PhotosPickerItem?
     @State private var showsExposurePanel = false
+    @State private var showsWhiteBalancePanel = false
 
     var body: some View {
         ZStack {
@@ -140,7 +141,7 @@ private struct CameraScreen: View {
             }
             .frame(
                 maxWidth: .infinity,
-                minHeight: showsExposurePanel ? 210 : 138,
+                minHeight: showsQuickAdjustmentPanel ? 210 : 138,
                 alignment: .bottom
             )
         }
@@ -148,12 +149,24 @@ private struct CameraScreen: View {
 
     private var quickAdjustments: some View {
         VStack(alignment: .trailing, spacing: 10) {
+            if showsWhiteBalancePanel {
+                whiteBalanceQuickPanel
+            }
+
             if showsExposurePanel {
                 exposureQuickPanel
             }
 
+            quickAdjustButton(title: "WB", isActive: showsWhiteBalancePanel || isWhiteBalanceAdjusted) {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    showsExposurePanel = false
+                    showsWhiteBalancePanel.toggle()
+                }
+            }
+
             quickAdjustButton(title: "EXP", isActive: showsExposurePanel || isExposureAdjusted) {
                 withAnimation(.easeOut(duration: 0.18)) {
+                    showsWhiteBalancePanel = false
                     showsExposurePanel.toggle()
                 }
             }
@@ -181,6 +194,57 @@ private struct CameraScreen: View {
                 in: Double(cameraManager.exposureBiasRange.lowerBound)...Double(cameraManager.exposureBiasRange.upperBound)
             )
             .tint(AppTheme.accent)
+        }
+        .padding(12)
+        .frame(width: 268)
+        .background(.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 18))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private var whiteBalanceQuickPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("White Balance")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text(cameraManager.whiteBalanceLabel)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+
+            Slider(
+                value: Binding(
+                    get: { cameraManager.whiteBalanceTemperature },
+                    set: { cameraManager.setWhiteBalanceTemperature($0) }
+                ),
+                in: cameraManager.whiteBalanceTemperatureRange,
+                step: 10
+            )
+            .tint(AppTheme.accent)
+
+            HStack {
+                Text("2500K")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.52))
+
+                Spacer()
+
+                Button("Auto") {
+                    cameraManager.setWhiteBalanceAuto()
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(AppTheme.accent)
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Text("9000K")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.52))
+            }
         }
         .padding(12)
         .frame(width: 268)
@@ -265,6 +329,7 @@ private struct CameraScreen: View {
     private var controlsButton: some View {
         Button {
             showsExposurePanel = false
+            showsWhiteBalancePanel = false
             showsControlMenu.toggle()
         } label: {
             Image(systemName: "slider.horizontal.3")
@@ -286,6 +351,14 @@ private struct CameraScreen: View {
 
     private var isExposureAdjusted: Bool {
         abs(cameraManager.exposureBias) > 0.01
+    }
+
+    private var isWhiteBalanceAdjusted: Bool {
+        cameraManager.usesManualWhiteBalance
+    }
+
+    private var showsQuickAdjustmentPanel: Bool {
+        showsExposurePanel || showsWhiteBalancePanel
     }
 
     private func quickAdjustButton(title: String, isActive: Bool, action: @escaping () -> Void) -> some View {
@@ -320,10 +393,6 @@ private struct CameraSettingsView: View {
                     lockSection
                     whiteBalanceSection
                     bitrateSection
-
-                    if cameraManager.supportsManualFocus {
-                        focusSection
-                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
@@ -338,10 +407,6 @@ private struct CameraSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Settings")
                     .font(.system(size: 30, weight: .bold))
-
-                Text(cameraManager.captureSummaryText)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.7))
             }
 
             Spacer()
@@ -361,22 +426,16 @@ private struct CameraSettingsView: View {
     }
 
     private var previewSection: some View {
-        settingsCard(title: "Preview", subtitle: "Snemanje ostane Apple Log. Preview vpliva samo na prikaz.") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    ForEach(PreviewLookMode.allCases) { mode in
-                        selectionButton(
-                            title: mode.title,
-                            isSelected: cameraManager.previewLookMode == mode
-                        ) {
-                            cameraManager.selectPreviewLookMode(mode)
-                        }
+        settingsCard(title: "Preview") {
+            HStack(spacing: 8) {
+                ForEach(PreviewLookMode.allCases) { mode in
+                    selectionButton(
+                        title: mode.title,
+                        isSelected: cameraManager.previewLookMode == mode
+                    ) {
+                        cameraManager.selectPreviewLookMode(mode)
                     }
                 }
-
-                Text("Izberi med Log in Rec.709 previewjem. Recording vedno ostane Apple Log.")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.6))
             }
         }
     }
@@ -440,17 +499,6 @@ private struct CameraSettingsView: View {
                         cameraManager.exposureLockedDuringRecording.toggle()
                     }
                 }
-
-                if cameraManager.supportsManualFocus {
-                    HStack(spacing: 8) {
-                        lockChip(
-                            title: "Manual Focus",
-                            isOn: cameraManager.manualFocusEnabled
-                        ) {
-                            cameraManager.setManualFocusEnabled(!cameraManager.manualFocusEnabled)
-                        }
-                    }
-                }
             }
         }
     }
@@ -509,64 +557,24 @@ private struct CameraSettingsView: View {
                 }
 
                 HStack {
-                    Text(cameraManager.usesCustomBitrate ? "Custom bitrate" : "Auto bitrate")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.7))
-
-                    Spacer()
-
                     Button(cameraManager.usesCustomBitrate ? "Auto" : "Default") {
                         cameraManager.resetRecordingBitrateToDefault()
                     }
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(AppTheme.accent)
                     .buttonStyle(.plain)
-                }
-            }
-        }
-    }
 
-    private var focusSection: some View {
-        settingsCard(title: "Focus") {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(cameraManager.manualFocusEnabled ? String(format: "%.2f", cameraManager.manualFocusPosition) : "AF")
-                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.82))
                     Spacer()
                 }
-
-                Slider(
-                    value: Binding(
-                        get: { Double(cameraManager.manualFocusPosition) },
-                        set: { cameraManager.setManualFocusPosition(Float($0)) }
-                    ),
-                    in: 0...1
-                )
-                .tint(AppTheme.accent)
-                .disabled(!cameraManager.manualFocusEnabled)
-
-                Text(cameraManager.manualFocusEnabled ? "Manual focus stays locked while recording." : "Tap to focus and expose. Long-press to lock focus and exposure.")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.7))
             }
         }
     }
 
     private func settingsCard<Content: View>(title: String,
-                                             subtitle: String? = nil,
                                              @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 17, weight: .bold))
-
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.64))
-                }
-            }
+            Text(title)
+                .font(.system(size: 17, weight: .bold))
 
             content()
         }
