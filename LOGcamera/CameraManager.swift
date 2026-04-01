@@ -76,14 +76,29 @@ enum CaptureStabilizationMode: String, CaseIterable, Identifiable {
         }
     }
 
-    var avMode: AVCaptureVideoStabilizationMode {
-        switch self {
-        case .off:
-            return .off
+    init(avMode: AVCaptureVideoStabilizationMode) {
+        switch avMode {
         case .standard:
-            return .standard
+            self = .standard
+        case .cinematic, .cinematicExtended, .cinematicExtendedEnhanced:
+            self = .cinematic
+        default:
+            self = .off
+        }
+    }
+
+    static func title(for avMode: AVCaptureVideoStabilizationMode) -> String {
+        switch avMode {
+        case .standard:
+            return "Standard"
         case .cinematic:
-            return .cinematic
+            return "Cinematic"
+        case .cinematicExtended:
+            return "Cinematic Extended"
+        case .cinematicExtendedEnhanced:
+            return "Cinematic Enhanced"
+        default:
+            return "Off"
         }
     }
 }
@@ -161,6 +176,9 @@ final class CameraManager: NSObject, ObservableObject {
     }
     @Published private(set) var recordingBitrateMbps = 30.0
     @Published private(set) var usesCustomBitrate = false
+    @Published private(set) var activeStabilizationMode: CaptureStabilizationMode = .off
+    @Published private(set) var activeStabilizationTitle = "Off"
+    @Published private(set) var supportedStabilizationModes: [CaptureStabilizationMode] = [.off]
 
     var exposureBiasRange: ClosedRange<Float> {
         guard let device = activeDevice else { return -2...2 }
@@ -214,6 +232,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var deviceRegistry: [String: AVCaptureDevice] = [:]
     private var captureRotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var captureRotationObservation: NSKeyValueObservation?
+    private var activeVideoStabilizationObservation: NSKeyValueObservation?
     private var focusFeedbackDismissWorkItem: DispatchWorkItem?
     private var pendingFocusLockWorkItem: DispatchWorkItem?
     private var statusMessageDismissWorkItem: DispatchWorkItem?
@@ -224,6 +243,8 @@ final class CameraManager: NSObject, ObservableObject {
     private var audioWriterInput: AVAssetWriterInput?
     private var currentRecordingURL: URL?
     private var isWritingSessionStarted = false
+    private var recordingSourceStartTime: CMTime?
+    private var exactVideoFrameCount: Int64 = 0
     private var currentCaptureRotationAngle: CGFloat = 0
     private let previewFrameSubject = PassthroughSubject<PreviewFrame, Never>()
 
@@ -259,6 +280,10 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func selectStabilizationMode(_ mode: CaptureStabilizationMode) {
+        guard supportedStabilizationModes.contains(mode) else {
+            presentStatusMessage("This stabilization mode is unavailable for the current lens/FPS/format.")
+            return
+        }
         selectedStabilizationMode = mode
         reconfigureActiveLens()
     }
@@ -289,7 +314,13 @@ final class CameraManager: NSObject, ObservableObject {
         sessionQueue.async {
             guard let device = self.deviceRegistry[lensID] else { return }
             self.session.beginConfiguration()
-            defer { self.session.commitConfiguration() }
+            var shouldRefreshOutput = false
+            defer {
+                self.session.commitConfiguration()
+                if shouldRefreshOutput {
+                    self.configureOutput()
+                }
+            }
 
             if let currentInput = self.videoInput {
                 self.session.removeInput(currentInput)
@@ -302,7 +333,7 @@ final class CameraManager: NSObject, ObservableObject {
             }
 
             self.configureDeviceForCurrentSelection()
-            self.configureOutput()
+            shouldRefreshOutput = true
         }
     }
 
@@ -414,6 +445,7 @@ final class CameraManager: NSObject, ObservableObject {
 
         sessionQueue.async {
             guard !self.isRecording else { return }
+            self.videoDataOutput.alwaysDiscardsLateVideoFrames = false
             self.prepareDeviceForRecording()
 
             let fileName = UUID().uuidString + ".mov"
@@ -445,6 +477,10 @@ final class CameraManager: NSObject, ObservableObject {
             self.isRecording = false
             self.recordingTimer?.invalidate()
             self.recordingTimer = nil
+        }
+
+        sessionQueue.async {
+            self.videoDataOutput.alwaysDiscardsLateVideoFrames = true
         }
 
         writerQueue.async {
@@ -703,9 +739,10 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func installDataOutputsIfPossible() {
         if session.canAddOutput(videoDataOutput) {
-            videoDataOutput.alwaysDiscardsLateVideoFrames = false
-            videoDataOutput.setSampleBufferDelegate(self, queue: writerQueue)
+            videoDataOutput.alwaysDiscardsLateVideoFrames = true
             session.addOutput(videoDataOutput)
+            configureVideoDataOutputPixelFormat()
+            videoDataOutput.setSampleBufferDelegate(self, queue: writerQueue)
         }
 
         if session.canAddOutput(audioDataOutput) {
@@ -714,12 +751,35 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    private func configureVideoDataOutputPixelFormat() {
+        let availableFormats = Set(videoDataOutput.availableVideoPixelFormatTypes)
+
+        let preferredFormats: [OSType] = [
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        ]
+
+        let fallbackFormats: [OSType] = [
+            kCVPixelFormatType_32BGRA
+        ]
+
+        guard let selectedFormat = (preferredFormats + fallbackFormats).first(where: { availableFormats.contains($0) }) else {
+            return
+        }
+
+        videoDataOutput.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String: selectedFormat
+        ]
+    }
+
     private func reconfigureActiveLens() {
         sessionQueue.async {
             self.session.beginConfiguration()
             self.configureDeviceForCurrentSelection()
-            self.configureOutput()
             self.session.commitConfiguration()
+            self.configureOutput()
         }
     }
 
@@ -749,6 +809,8 @@ final class CameraManager: NSObject, ObservableObject {
                 device.setFocusModeLocked(lensPosition: manualFocusPosition, completionHandler: nil)
             }
             device.unlockForConfiguration()
+
+            updateSupportedStabilizationModes(for: selection.format)
 
             DispatchQueue.main.async {
                 self.activeDevice = device
@@ -789,10 +851,27 @@ final class CameraManager: NSObject, ObservableObject {
             guard profile != .unavailable else { return nil }
 
             let maxFrameRate = format.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0
-            return FormatSelection(format: format, profile: profile, maxFrameRate: maxFrameRate)
+            let preferredStabilizationMode = preferredStabilizationAVMode(for: format)
+            let supportsSelectedStabilization = selectedStabilizationMode == .off ||
+                preferredStabilizationMode != .off
+
+            guard supportsSelectedStabilization else { return nil }
+
+            return FormatSelection(
+                format: format,
+                profile: profile,
+                maxFrameRate: maxFrameRate,
+                supportsSelectedStabilization: supportsSelectedStabilization,
+                preferredStabilizationMode: preferredStabilizationMode,
+                stabilizationStrength: stabilizationStrength(for: preferredStabilizationMode)
+            )
         }
 
         guard let selection = matchingFormats.sorted(by: { lhs, rhs in
+            if selectedStabilizationMode != .off,
+               lhs.stabilizationStrength != rhs.stabilizationStrength {
+                return lhs.stabilizationStrength > rhs.stabilizationStrength
+            }
             if lhs.profile.priority == rhs.profile.priority {
                 return lhs.maxFrameRate > rhs.maxFrameRate
             }
@@ -830,23 +909,117 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func configureOutput() {
-        guard let connection = videoDataOutput.connection(with: .video) else { return }
+        if let connection = videoDataOutput.connection(with: .video) {
+            applyPreviewConnectionConfiguration(connection)
+            observeActiveStabilizationMode(on: connection)
+            refreshActiveStabilizationMode(from: connection)
+        }
+        DispatchQueue.main.async {
+            self.canRecord = self.colorProfile != .unavailable
+        }
+    }
+
+    func applyPreviewConnectionConfiguration(_ connection: AVCaptureConnection) {
+        let captureDevice = videoInput?.device ?? activeDevice
 
         if connection.isVideoMirroringSupported {
-            connection.isVideoMirrored = activeDevice?.position == .front
+            if connection.automaticallyAdjustsVideoMirroring {
+                connection.automaticallyAdjustsVideoMirroring = false
+            }
+            connection.isVideoMirrored = captureDevice?.position == .front
         }
 
         if connection.isVideoStabilizationSupported {
-            let preferredMode = selectedStabilizationMode.avMode
-            if (videoInput?.device ?? activeDevice)?.activeFormat.isVideoStabilizationModeSupported(preferredMode) == true {
-                connection.preferredVideoStabilizationMode = preferredMode
-            } else {
-                connection.preferredVideoStabilizationMode = .off
+            let preferredMode = preferredStabilizationAVMode(for: captureDevice?.activeFormat)
+            connection.preferredVideoStabilizationMode = preferredMode
+        }
+    }
+
+    private func preferredStabilizationAVMode(for format: AVCaptureDevice.Format?) -> AVCaptureVideoStabilizationMode {
+        guard let format else { return .off }
+
+        switch selectedStabilizationMode {
+        case .off:
+            return .off
+        case .standard:
+            return format.isVideoStabilizationModeSupported(.standard) ? .standard : .off
+        case .cinematic:
+            if format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) {
+                return .cinematicExtendedEnhanced
             }
+            if format.isVideoStabilizationModeSupported(.cinematicExtended) {
+                return .cinematicExtended
+            }
+            if format.isVideoStabilizationModeSupported(.cinematic) {
+                return .cinematic
+            }
+            return .off
+        }
+    }
+
+    private func refreshActiveStabilizationMode(from connection: AVCaptureConnection) {
+        sessionQueue.asyncAfter(deadline: .now() + 0.15) {
+            let activeAVMode = connection.activeVideoStabilizationMode
+            let activeMode = CaptureStabilizationMode(avMode: activeAVMode)
+            DispatchQueue.main.async {
+                self.activeStabilizationMode = activeMode
+                self.activeStabilizationTitle = CaptureStabilizationMode.title(for: activeAVMode)
+                if self.selectedStabilizationMode != .off,
+                   activeMode == .off {
+                    self.presentStatusMessage("Selected stabilization is not active for the current lens/FPS/format.")
+                }
+            }
+        }
+    }
+
+    private func observeActiveStabilizationMode(on connection: AVCaptureConnection) {
+        activeVideoStabilizationObservation?.invalidate()
+        activeVideoStabilizationObservation = connection.observe(
+            \.activeVideoStabilizationMode,
+            options: [.initial, .new]
+        ) { [weak self] connection, _ in
+            let activeAVMode = connection.activeVideoStabilizationMode
+            let activeMode = CaptureStabilizationMode(avMode: activeAVMode)
+            DispatchQueue.main.async {
+                self?.activeStabilizationMode = activeMode
+                self?.activeStabilizationTitle = CaptureStabilizationMode.title(for: activeAVMode)
+            }
+        }
+    }
+
+    private func stabilizationStrength(for mode: AVCaptureVideoStabilizationMode) -> Int {
+        switch mode {
+        case .cinematicExtendedEnhanced:
+            return 4
+        case .cinematicExtended:
+            return 3
+        case .cinematic:
+            return 2
+        case .standard:
+            return 1
+        default:
+            return 0
+        }
+    }
+
+    private func updateSupportedStabilizationModes(for format: AVCaptureDevice.Format) {
+        var modes: [CaptureStabilizationMode] = [.off]
+
+        if format.isVideoStabilizationModeSupported(.standard) {
+            modes.append(.standard)
+        }
+
+        if format.isVideoStabilizationModeSupported(.cinematic) ||
+            format.isVideoStabilizationModeSupported(.cinematicExtended) ||
+            format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) {
+            modes.append(.cinematic)
         }
 
         DispatchQueue.main.async {
-            self.canRecord = self.colorProfile != .unavailable
+            self.supportedStabilizationModes = modes
+            if !modes.contains(self.selectedStabilizationMode) {
+                self.selectedStabilizationMode = .off
+            }
         }
     }
 
@@ -931,7 +1104,8 @@ final class CameraManager: NSObject, ObservableObject {
         guard startWritingIfNeeded(with: writer, sampleBuffer: sampleBuffer) else { return }
 
         guard writer.status == .writing, videoInput.isReadyForMoreMediaData else { return }
-        if !videoInput.append(sampleBuffer) {
+        guard let retimedSampleBuffer = retimedVideoSampleBuffer(from: sampleBuffer) else { return }
+        if !videoInput.append(retimedSampleBuffer) {
             handleWriterFailureIfNeeded(writer.error)
         }
     }
@@ -943,7 +1117,8 @@ final class CameraManager: NSObject, ObservableObject {
               isWritingSessionStarted else { return }
 
         guard writer.status == .writing, audioInput.isReadyForMoreMediaData else { return }
-        if !audioInput.append(sampleBuffer) {
+        guard let retimedSampleBuffer = retimedAudioSampleBuffer(from: sampleBuffer) else { return }
+        if !audioInput.append(retimedSampleBuffer) {
             handleWriterFailureIfNeeded(writer.error)
         }
     }
@@ -970,10 +1145,102 @@ final class CameraManager: NSObject, ObservableObject {
             return false
         }
 
-        let startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        writer.startSession(atSourceTime: startTime)
+        recordingSourceStartTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        exactVideoFrameCount = 0
+        writer.startSession(atSourceTime: .zero)
         isWritingSessionStarted = true
         return true
+    }
+
+    private func retimedVideoSampleBuffer(from sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
+        let frameDuration = CMTime(value: 1, timescale: CMTimeScale(selectedFrameRate))
+        let presentationTime = CMTime(value: exactVideoFrameCount, timescale: CMTimeScale(selectedFrameRate))
+        exactVideoFrameCount += 1
+
+        var timingInfo = CMSampleTimingInfo(
+            duration: frameDuration,
+            presentationTimeStamp: presentationTime,
+            decodeTimeStamp: .invalid
+        )
+
+        var retimedSampleBuffer: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timingInfo,
+            sampleBufferOut: &retimedSampleBuffer
+        )
+
+        guard status == noErr else {
+            presentStatusMessage("Video timing normalization failed.")
+            return nil
+        }
+
+        return retimedSampleBuffer
+    }
+
+    private func retimedAudioSampleBuffer(from sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
+        guard let recordingSourceStartTime else { return sampleBuffer }
+
+        var timingCount = 0
+        guard CMSampleBufferGetSampleTimingInfoArray(
+            sampleBuffer,
+            entryCount: 0,
+            arrayToFill: nil,
+            entriesNeededOut: &timingCount
+        ) == noErr,
+        timingCount > 0 else {
+            return sampleBuffer
+        }
+
+        var timingInfo = Array(
+            repeating: CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid),
+            count: timingCount
+        )
+
+        guard CMSampleBufferGetSampleTimingInfoArray(
+            sampleBuffer,
+            entryCount: timingCount,
+            arrayToFill: &timingInfo,
+            entriesNeededOut: &timingCount
+        ) == noErr else {
+            return sampleBuffer
+        }
+
+        for index in timingInfo.indices {
+            if timingInfo[index].presentationTimeStamp.isValid {
+                timingInfo[index].presentationTimeStamp = CMTimeSubtract(
+                    timingInfo[index].presentationTimeStamp,
+                    recordingSourceStartTime
+                )
+            }
+
+            if timingInfo[index].decodeTimeStamp.isValid {
+                timingInfo[index].decodeTimeStamp = CMTimeSubtract(
+                    timingInfo[index].decodeTimeStamp,
+                    recordingSourceStartTime
+                )
+            }
+        }
+
+        if let firstPTS = timingInfo.first?.presentationTimeStamp,
+           firstPTS.isValid,
+           firstPTS < .zero {
+            return nil
+        }
+
+        var retimedSampleBuffer: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleTimingEntryCount: timingCount,
+            sampleTimingArray: &timingInfo,
+            sampleBufferOut: &retimedSampleBuffer
+        )
+
+        guard status == noErr else { return nil }
+        return retimedSampleBuffer
     }
 
     private func finishWriting() {
@@ -1008,6 +1275,8 @@ final class CameraManager: NSObject, ObservableObject {
         audioWriterInput = nil
         currentRecordingURL = nil
         isWritingSessionStarted = false
+        recordingSourceStartTime = nil
+        exactVideoFrameCount = 0
     }
 
     private func handleWriterFailureIfNeeded(_ error: Error?) {
@@ -1118,9 +1387,13 @@ final class CameraManager: NSObject, ObservableObject {
             selectedStabilizationMode = stabilization
         }
 
-        if let rawPreviewLook = defaults.string(forKey: SettingsKey.previewLookMode),
-           let previewLook = PreviewLookMode(rawValue: rawPreviewLook) {
-            previewLookMode = previewLook
+        if let rawPreviewMode = defaults.string(forKey: SettingsKey.previewLookMode) {
+            if rawPreviewMode == "normal" {
+                previewLookMode = .rec709
+                defaults.set(PreviewLookMode.rec709.rawValue, forKey: SettingsKey.previewLookMode)
+            } else if let previewMode = PreviewLookMode(rawValue: rawPreviewMode) {
+                previewLookMode = previewMode
+            }
         }
 
         if defaults.object(forKey: SettingsKey.whiteBalanceLockedDuringRecording) != nil {
@@ -1312,22 +1585,46 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func processPreviewSampleBufferIfNeeded(_ sampleBuffer: CMSampleBuffer) {
-        guard previewLookMode == .rec709,
-              colorProfile != .unavailable else { return }
-
-        let profile = colorProfile
-        var copiedSampleBuffer: CMSampleBuffer?
-        guard CMSampleBufferCreateCopy(
-            allocator: kCFAllocatorDefault,
-            sampleBuffer: sampleBuffer,
-            sampleBufferOut: &copiedSampleBuffer
-        ) == noErr,
-        let copiedSampleBuffer else {
+    private func publishPreviewFrame(from sampleBuffer: CMSampleBuffer) {
+        guard colorProfile != .unavailable,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return
         }
 
-        previewFrameSubject.send(PreviewFrame(sampleBuffer: copiedSampleBuffer, profile: profile))
+        previewFrameSubject.send(
+            PreviewFrame(
+                pixelBuffer: pixelBuffer,
+                profile: colorProfile,
+                yCbCrMatrix: previewYCbCrMatrix(for: pixelBuffer),
+                isFullRange: isFullRangePixelBuffer(pixelBuffer)
+            )
+        )
+    }
+
+    private func previewYCbCrMatrix(for pixelBuffer: CVPixelBuffer) -> PreviewYCbCrMatrix {
+        guard let attachment = CVBufferCopyAttachment(
+            pixelBuffer,
+            kCVImageBufferYCbCrMatrixKey,
+            nil
+        ) else {
+            return .rec709
+        }
+
+        if CFEqual(attachment, kCVImageBufferYCbCrMatrix_ITU_R_601_4) {
+            return .rec601
+        }
+
+        return .rec709
+    }
+
+    private func isFullRangePixelBuffer(_ pixelBuffer: CVPixelBuffer) -> Bool {
+        switch CVPixelBufferGetPixelFormatType(pixelBuffer) {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+            kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -1336,7 +1633,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
                                    didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
         if output === self.videoDataOutput {
-            self.processPreviewSampleBufferIfNeeded(sampleBuffer)
+            self.publishPreviewFrame(from: sampleBuffer)
             self.appendVideoSampleBuffer(sampleBuffer)
         } else if output === self.audioDataOutput {
             self.appendAudioSampleBuffer(sampleBuffer)
@@ -1372,6 +1669,9 @@ private struct FormatSelection {
     let format: AVCaptureDevice.Format
     let profile: CaptureColorProfile
     let maxFrameRate: Double
+    let supportsSelectedStabilization: Bool
+    let preferredStabilizationMode: AVCaptureVideoStabilizationMode
+    let stabilizationStrength: Int
 }
 
 private struct CameraConfigurationError: Error {

@@ -241,7 +241,14 @@ private struct CameraScreen: View {
                         .frame(width: 58, height: 58)
                 }
             }
+            .frame(width: 124, height: 124)
+            .contentShape(Circle())
         }
+        .background(
+            Circle()
+                .fill(Color.black.opacity(0.001))
+                .frame(width: 124, height: 124)
+        )
         .buttonStyle(.plain)
         .disabled(!cameraManager.canRecord && !cameraManager.isRecording)
     }
@@ -341,16 +348,22 @@ private struct CameraSettingsView: View {
     }
 
     private var previewSection: some View {
-        settingsCard(title: "Preview", subtitle: "Snemanje ostane Apple Log.") {
-            HStack(spacing: 8) {
-                ForEach(PreviewLookMode.allCases) { mode in
-                    selectionButton(
-                        title: mode.title,
-                        isSelected: cameraManager.previewLookMode == mode
-                    ) {
-                        cameraManager.selectPreviewLookMode(mode)
+        settingsCard(title: "Preview", subtitle: "Snemanje ostane Apple Log. Preview vpliva samo na prikaz.") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    ForEach(PreviewLookMode.allCases) { mode in
+                        selectionButton(
+                            title: mode.title,
+                            isSelected: cameraManager.previewLookMode == mode
+                        ) {
+                            cameraManager.selectPreviewLookMode(mode)
+                        }
                     }
                 }
+
+                Text("Izberi med Log in Rec.709 previewjem. Recording vedno ostane Apple Log.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.6))
             }
         }
     }
@@ -378,8 +391,20 @@ private struct CameraSettingsView: View {
                         ) {
                             cameraManager.selectStabilizationMode(mode)
                         }
+                        .disabled(!cameraManager.supportedStabilizationModes.contains(mode))
+                        .opacity(cameraManager.supportedStabilizationModes.contains(mode) ? 1 : 0.45)
                     }
                 }
+
+                HStack {
+                    Text("Active")
+                        .foregroundStyle(.white.opacity(0.7))
+                    Spacer()
+                    Text(cameraManager.activeStabilizationTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(cameraManager.activeStabilizationMode == .off ? .white.opacity(0.7) : AppTheme.accent)
+                }
+                .font(.system(size: 13, weight: .medium))
             }
         }
     }

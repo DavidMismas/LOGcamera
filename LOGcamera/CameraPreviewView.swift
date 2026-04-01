@@ -8,10 +8,10 @@ struct CameraPreviewView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
-        view.videoPreviewLayer.session = cameraManager.session
-        view.videoPreviewLayer.videoGravity = .resizeAspectFill
+        view.configureSession(cameraManager.session)
         view.bindPreviewFrames(to: cameraManager)
         view.setPreviewLookMode(cameraManager.previewLookMode)
+        view.applyConnectionConfiguration(from: cameraManager)
         view.onFocusSelection = { [weak cameraManager] capturePoint, previewPoint, shouldLock in
             guard let cameraManager else { return }
             cameraManager.showFocusFeedback(at: previewPoint, isLocked: shouldLock)
@@ -21,13 +21,17 @@ struct CameraPreviewView: UIViewRepresentable {
                 cameraManager.focus(at: capturePoint)
             }
         }
+        if let device = cameraManager.activeDevice {
+            view.updateActiveDevice(device)
+        }
         return view
     }
 
     func updateUIView(_ uiView: PreviewView, context: Context) {
-        uiView.videoPreviewLayer.session = cameraManager.session
+        uiView.configureSession(cameraManager.session)
         uiView.bindPreviewFrames(to: cameraManager)
         uiView.setPreviewLookMode(cameraManager.previewLookMode)
+        uiView.applyConnectionConfiguration(from: cameraManager)
         uiView.onFocusSelection = { [weak cameraManager] capturePoint, previewPoint, shouldLock in
             guard let cameraManager else { return }
             cameraManager.showFocusFeedback(at: previewPoint, isLocked: shouldLock)
@@ -47,15 +51,16 @@ struct CameraPreviewView: UIViewRepresentable {
 final class PreviewView: UIView {
     var onFocusSelection: ((CGPoint, CGPoint, Bool) -> Void)?
 
+    private let previewSurface = MTKView(frame: .zero)
+    private let conversionPreviewLayer = AVCaptureVideoPreviewLayer()
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var previewRotationObservation: NSKeyValueObservation?
     private var activeDevice: AVCaptureDevice?
     private weak var boundCameraManager: CameraManager?
     private var previewFrameCancellable: AnyCancellable?
-    private let processedPreviewView = MTKView(frame: .zero)
     private var previewRenderer: MetalPreviewRenderer?
-    private var isProcessedPreviewEnabled = false
     private var currentPreviewRotationAngle: CGFloat = 0
+    private var currentPreviewLookMode: PreviewLookMode = .log
 
     private lazy var tapGestureRecognizer = UITapGestureRecognizer(
         target: self,
@@ -71,29 +76,24 @@ final class PreviewView: UIView {
         return recognizer
     }()
 
-    override class var layerClass: AnyClass {
-        AVCaptureVideoPreviewLayer.self
-    }
-
-    var videoPreviewLayer: AVCaptureVideoPreviewLayer {
-        layer as! AVCaptureVideoPreviewLayer
-    }
-
     override init(frame: CGRect) {
         super.init(frame: frame)
-        setupProcessedPreviewView()
+        setupPreviewSurface()
+        setupConversionLayer()
         setupGestures()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        setupProcessedPreviewView()
+        setupPreviewSurface()
+        setupConversionLayer()
         setupGestures()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        updateProcessedPreviewLayout()
+        conversionPreviewLayer.frame = bounds
+        updatePreviewSurfaceLayout()
     }
 
     override func didMoveToWindow() {
@@ -105,11 +105,23 @@ final class PreviewView: UIView {
         }
     }
 
+    func configureSession(_ session: AVCaptureSession) {
+        if conversionPreviewLayer.session !== session {
+            conversionPreviewLayer.session = session
+            previewRenderer?.clear()
+            if let boundCameraManager {
+                applyConnectionConfiguration(from: boundCameraManager)
+            }
+            setupRotationIfPossible()
+        }
+    }
+
     func updateActiveDevice(_ device: AVCaptureDevice?) {
         guard activeDevice?.uniqueID != device?.uniqueID else { return }
         activeDevice = device
+        previewRenderer?.clear()
         setupRotationIfPossible()
-        updateProcessedPreviewLayout()
+        updatePreviewSurfaceLayout()
     }
 
     func bindPreviewFrames(to cameraManager: CameraManager) {
@@ -117,16 +129,33 @@ final class PreviewView: UIView {
 
         boundCameraManager = cameraManager
         previewFrameCancellable = cameraManager.previewFramePublisher.sink { [weak self] frame in
-            self?.previewRenderer?.enqueue(frame)
+            guard let self else { return }
+            self.previewRenderer?.enqueue(frame)
         }
+        applyConnectionConfiguration(from: cameraManager)
     }
 
     func setPreviewLookMode(_ mode: PreviewLookMode) {
-        isProcessedPreviewEnabled = mode == .rec709
-        if !isProcessedPreviewEnabled {
-            previewRenderer?.clear()
-        }
-        processedPreviewView.isHidden = !isProcessedPreviewEnabled
+        currentPreviewLookMode = mode
+        previewRenderer?.setPreviewLookMode(mode)
+        updateVisiblePreviewMode()
+    }
+
+    private func setupPreviewSurface() {
+        previewSurface.clipsToBounds = true
+        previewSurface.isUserInteractionEnabled = false
+        previewSurface.backgroundColor = .black
+        previewSurface.frame = bounds
+        previewRenderer = MetalPreviewRenderer(view: previewSurface)
+        addSubview(previewSurface)
+        bringSubviewToFront(previewSurface)
+        updateVisiblePreviewMode()
+    }
+
+    private func setupConversionLayer() {
+        conversionPreviewLayer.videoGravity = .resizeAspectFill
+        conversionPreviewLayer.isHidden = true
+        layer.insertSublayer(conversionPreviewLayer, at: 0)
     }
 
     private func setupGestures() {
@@ -136,18 +165,9 @@ final class PreviewView: UIView {
         addGestureRecognizer(longPressGestureRecognizer)
     }
 
-    private func setupProcessedPreviewView() {
-        processedPreviewView.clipsToBounds = true
-        processedPreviewView.isUserInteractionEnabled = false
-        processedPreviewView.backgroundColor = .clear
-        processedPreviewView.isHidden = true
-        previewRenderer = MetalPreviewRenderer(view: processedPreviewView)
-        addSubview(processedPreviewView)
-    }
-
     private func setupRotationIfPossible() {
         guard let activeDevice else { return }
-        guard videoPreviewLayer.connection != nil else { return }
+        guard conversionPreviewLayer.connection != nil else { return }
 
         if let coordinator = rotationCoordinator,
            coordinator.device?.uniqueID == activeDevice.uniqueID {
@@ -156,7 +176,7 @@ final class PreviewView: UIView {
 
         teardownRotation()
 
-        let coordinator = AVCaptureDevice.RotationCoordinator(device: activeDevice, previewLayer: videoPreviewLayer)
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: activeDevice, previewLayer: conversionPreviewLayer)
         rotationCoordinator = coordinator
         applyPreviewRotation(coordinator.videoRotationAngleForHorizonLevelPreview)
 
@@ -171,11 +191,14 @@ final class PreviewView: UIView {
     }
 
     private func applyPreviewRotation(_ angle: CGFloat) {
-        guard let connection = videoPreviewLayer.connection,
+        guard let connection = conversionPreviewLayer.connection,
               connection.isVideoRotationAngleSupported(angle) else { return }
         connection.videoRotationAngle = angle
+        if let boundCameraManager {
+            boundCameraManager.applyPreviewConnectionConfiguration(connection)
+        }
         currentPreviewRotationAngle = angle
-        updateProcessedPreviewLayout()
+        updatePreviewSurfaceLayout()
     }
 
     private func teardownRotation() {
@@ -186,7 +209,7 @@ final class PreviewView: UIView {
 
     private func capturePoint(from gesture: UIGestureRecognizer) -> CGPoint {
         let location = gesture.location(in: self)
-        return videoPreviewLayer.captureDevicePointConverted(fromLayerPoint: location)
+        return conversionPreviewLayer.captureDevicePointConverted(fromLayerPoint: location)
     }
 
     private func previewPoint(from gesture: UIGestureRecognizer) -> CGPoint {
@@ -211,7 +234,7 @@ final class PreviewView: UIView {
         onFocusSelection?(capturePoint(from: gesture), previewPoint(from: gesture), true)
     }
 
-    private func updateProcessedPreviewLayout() {
+    private func updatePreviewSurfaceLayout() {
         let normalizedAngle = abs(Int(currentPreviewRotationAngle.rounded())) % 360
         let swapsAxes = normalizedAngle == 90 || normalizedAngle == 270
         let baseSize = bounds.size
@@ -219,13 +242,29 @@ final class PreviewView: UIView {
             ? CGSize(width: baseSize.height, height: baseSize.width)
             : baseSize
 
-        processedPreviewView.bounds = CGRect(origin: .zero, size: rotatedSize)
-        processedPreviewView.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        previewSurface.bounds = CGRect(origin: .zero, size: rotatedSize)
+        previewSurface.center = CGPoint(x: bounds.midX, y: bounds.midY)
 
         var transform = CGAffineTransform(rotationAngle: currentPreviewRotationAngle * (.pi / 180))
         if activeDevice?.position == .front {
             transform = transform.scaledBy(x: -1, y: 1)
         }
-        processedPreviewView.transform = transform
+        previewSurface.transform = transform
+    }
+
+    private func updateVisiblePreviewMode() {
+        let showMetalPreview = previewRenderer != nil
+        previewSurface.isHidden = !showMetalPreview
+        previewSurface.alpha = 1
+        conversionPreviewLayer.isHidden = showMetalPreview
+        if showMetalPreview {
+            bringSubviewToFront(previewSurface)
+        }
+    }
+
+    func applyConnectionConfiguration(from cameraManager: CameraManager) {
+        if let connection = conversionPreviewLayer.connection {
+            cameraManager.applyPreviewConnectionConfiguration(connection)
+        }
     }
 }
