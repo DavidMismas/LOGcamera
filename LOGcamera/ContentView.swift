@@ -127,6 +127,7 @@ private struct CameraScreen: View {
     @State private var showsControlMenu = false
     @State private var showsExposurePanel = false
     @State private var showsWhiteBalancePanel = false
+    @State private var previewControlRotationDegrees: Double = 0
 
     var body: some View {
         ZStack {
@@ -150,6 +151,16 @@ private struct CameraScreen: View {
         }
         .fullScreenCover(isPresented: $showsControlMenu) {
             CameraSettingsView(cameraManager: cameraManager)
+        }
+        .onAppear {
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+            updatePreviewControlRotation(for: UIDevice.current.orientation)
+        }
+        .onDisappear {
+            UIDevice.current.endGeneratingDeviceOrientationNotifications()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            updatePreviewControlRotation(for: UIDevice.current.orientation)
         }
     }
 
@@ -319,6 +330,7 @@ private struct CameraScreen: View {
         .padding(12)
         .frame(width: 268)
         .metalRoundedPanel(cornerRadius: 18)
+        .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
     private var whiteBalanceQuickPanel: some View {
@@ -366,6 +378,7 @@ private struct CameraScreen: View {
         .padding(12)
         .frame(width: 268)
         .metalRoundedPanel(cornerRadius: 18)
+        .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
     private var lensPickerButton: some View {
@@ -398,6 +411,7 @@ private struct CameraScreen: View {
         }
         .buttonStyle(.plain)
         .disabled(cameraManager.isRecording)
+        .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
     private var recordButton: some View {
@@ -454,6 +468,7 @@ private struct CameraScreen: View {
                 .metalCirclePanel()
         }
         .buttonStyle(.plain)
+        .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
     private var activeLensShortName: String {
@@ -472,6 +487,27 @@ private struct CameraScreen: View {
         showsExposurePanel || showsWhiteBalancePanel
     }
 
+    private func updatePreviewControlRotation(for orientation: UIDeviceOrientation) {
+        let angle: Double
+        switch orientation {
+        case .landscapeLeft:
+            angle = 90
+        case .landscapeRight:
+            angle = -90
+        case .portraitUpsideDown:
+            angle = 180
+        case .portrait:
+            angle = 0
+        default:
+            return
+        }
+
+        guard angle != previewControlRotationDegrees else { return }
+        withAnimation(.easeOut(duration: 0.18)) {
+            previewControlRotationDegrees = angle
+        }
+    }
+
     private func quickAdjustButton(title: String, isActive: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
@@ -481,6 +517,7 @@ private struct CameraScreen: View {
                 .metalCirclePanel(isActive: isActive)
         }
         .buttonStyle(.plain)
+        .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
     private func compactToggleChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
