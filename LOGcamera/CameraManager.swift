@@ -119,6 +119,25 @@ enum PreviewLookMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum ProExposureMode: String, CaseIterable, Identifiable {
+    case auto
+    case shutterAngle180
+    case manual
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .auto:
+            return "Auto"
+        case .shutterAngle180:
+            return "180°"
+        case .manual:
+            return "Manual"
+        }
+    }
+}
+
 final class CameraManager: NSObject, ObservableObject {
     private enum SettingsKey {
         static let selectedFrameRate = "camera.selectedFrameRate"
@@ -133,6 +152,10 @@ final class CameraManager: NSObject, ObservableObject {
         static let manualFocusEnabled = "camera.manualFocusEnabled"
         static let manualFocusPosition = "camera.manualFocusPosition"
         static let previewLookMode = "camera.previewLookMode"
+        static let proExposureEnabled = "camera.proExposureEnabled"
+        static let proExposureMode = "camera.proExposureMode"
+        static let manualShutterSpeedDenominator = "camera.manualShutterSpeedDenominator"
+        static let manualISO = "camera.manualISO"
     }
 
     static let supportedFrameRates = [24, 25, 30, 60, 120]
@@ -179,6 +202,14 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var activeStabilizationMode: CaptureStabilizationMode = .off
     @Published private(set) var activeStabilizationTitle = "Off"
     @Published private(set) var supportedStabilizationModes: [CaptureStabilizationMode] = [.off]
+    @Published var proExposureEnabled = false {
+        didSet { UserDefaults.standard.set(proExposureEnabled, forKey: SettingsKey.proExposureEnabled) }
+    }
+    @Published var proExposureMode: ProExposureMode = .auto {
+        didSet { UserDefaults.standard.set(proExposureMode.rawValue, forKey: SettingsKey.proExposureMode) }
+    }
+    @Published private(set) var manualShutterSpeedDenominator = 60
+    @Published private(set) var manualISO: Float = 100
 
     var exposureBiasRange: ClosedRange<Float> {
         guard let device = activeDevice else { return -2...2 }
@@ -187,6 +218,64 @@ final class CameraManager: NSObject, ObservableObject {
 
     var whiteBalanceTemperatureRange: ClosedRange<Double> {
         2500...9000
+    }
+
+    var isoRange: ClosedRange<Float> {
+        guard let device = activeDevice else { return 25...3200 }
+        return device.activeFormat.minISO...device.activeFormat.maxISO
+    }
+
+    var availableShutterSpeedDenominators: [Int] {
+        let candidates = [
+            24, 25, 30, 40, 48, 50, 60, 72, 80, 90, 96, 100,
+            120, 125, 144, 160, 180, 192, 200, 240, 250, 288, 320,
+            360, 400, 480, 500, 576, 640, 720, 800, 960, 1000, 1200,
+            1600, 2000, 3200, 4000, 8000
+        ]
+
+        let frameLimitedMaxDuration = 1.0 / Double(max(selectedFrameRate, 1))
+        guard let device = activeDevice else {
+            return candidates.filter { (1.0 / Double($0)) <= frameLimitedMaxDuration }
+        }
+
+        let minDuration = CMTimeGetSeconds(device.activeFormat.minExposureDuration)
+        let maxDuration = min(CMTimeGetSeconds(device.activeFormat.maxExposureDuration), frameLimitedMaxDuration)
+        let filtered = candidates.filter { denominator in
+            let duration = 1.0 / Double(denominator)
+            return duration >= minDuration && duration <= maxDuration
+        }
+
+        let ideal = idealShutterSpeedDenominator(for: selectedFrameRate)
+        let combined = Set(filtered + [ideal, selectedFrameRate, manualShutterSpeedDenominator])
+        return combined.sorted()
+    }
+
+    var availableISOValues: [Float] {
+        let commonValues: [Float] = [
+            25, 32, 40, 50, 64, 80, 100, 125, 160, 200, 250, 320,
+            400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200,
+            4000, 5000, 6400, 8000, 10000, 12800
+        ]
+
+        let clampedValues = commonValues.filter { isoRange.contains($0) }
+        let combined = Set(clampedValues + [isoRange.lowerBound, manualISO, isoRange.upperBound])
+        return combined.sorted()
+    }
+
+    var currentShutterSpeedLabel: String {
+        "1/\(currentShutterSpeedDenominator)"
+    }
+
+    var currentISOValueLabel: String {
+        proExposureMode == .shutterAngle180 ? "Auto" : String(format: "%.0f", manualISO)
+    }
+
+    var supportsExposureBiasAdjustment: Bool {
+        !proExposureEnabled || proExposureMode == .auto
+    }
+
+    var currentShutterSpeedDenominator: Int {
+        proExposureMode == .shutterAngle180 ? idealShutterSpeedDenominator(for: selectedFrameRate) : manualShutterSpeedDenominator
     }
 
     var colorProfileTitle: String {
@@ -247,6 +336,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var exactVideoFrameCount: Int64 = 0
     private var currentCaptureRotationAngle: CGFloat = 0
     private let previewFrameSubject = PassthroughSubject<PreviewFrame, Never>()
+    private var proExposureAutomationTimer: DispatchSourceTimer?
 
     var previewFramePublisher: AnyPublisher<PreviewFrame, Never> {
         previewFrameSubject.eraseToAnyPublisher()
@@ -292,6 +382,34 @@ final class CameraManager: NSObject, ObservableObject {
         previewLookMode = mode
     }
 
+    func setProExposureEnabled(_ isEnabled: Bool) {
+        proExposureEnabled = isEnabled
+        syncExposureConfiguration()
+    }
+
+    func selectProExposureMode(_ mode: ProExposureMode) {
+        proExposureMode = mode
+        if mode == .shutterAngle180 {
+            manualShutterSpeedDenominator = idealShutterSpeedDenominator(for: selectedFrameRate)
+            UserDefaults.standard.set(manualShutterSpeedDenominator, forKey: SettingsKey.manualShutterSpeedDenominator)
+        }
+        syncExposureConfiguration()
+    }
+
+    func setManualShutterSpeedDenominator(_ denominator: Int) {
+        let nearest = nearestShutterSpeedDenominator(to: denominator)
+        manualShutterSpeedDenominator = nearest
+        UserDefaults.standard.set(nearest, forKey: SettingsKey.manualShutterSpeedDenominator)
+        syncExposureConfiguration()
+    }
+
+    func setManualISO(_ value: Float) {
+        let clamped = min(max(value, isoRange.lowerBound), isoRange.upperBound)
+        manualISO = clamped
+        UserDefaults.standard.set(Double(clamped), forKey: SettingsKey.manualISO)
+        syncExposureConfiguration()
+    }
+
     func setRecordingBitrateMbps(_ value: Double) {
         guard let supportedValue = Self.supportedBitratesMbps.first(where: { abs($0 - value) < 0.001 }) else { return }
         recordingBitrateMbps = supportedValue
@@ -307,6 +425,20 @@ final class CameraManager: NSObject, ObservableObject {
         let defaults = UserDefaults.standard
         defaults.set(recordingBitrateMbps, forKey: SettingsKey.recordingBitrateMbps)
         defaults.set(usesCustomBitrate, forKey: SettingsKey.usesCustomBitrate)
+    }
+
+    private func syncExposureConfiguration() {
+        sessionQueue.async {
+            guard let device = self.videoInput?.device ?? self.activeDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                self.applyExposureConfiguration(on: device)
+                device.unlockForConfiguration()
+            } catch {
+                self.presentStatusMessage("Exposure mode update failed.")
+            }
+            self.updateProExposureAutomationState()
+        }
     }
 
     func switchLens(to lensID: String) {
@@ -351,6 +483,119 @@ final class CameraManager: NSObject, ObservableObject {
             } catch {
                 self.presentStatusMessage("Exposure adjustment failed.")
             }
+        }
+    }
+
+    private func idealShutterSpeedDenominator(for frameRate: Int) -> Int {
+        max(frameRate * 2, frameRate)
+    }
+
+    private func nearestShutterSpeedDenominator(to denominator: Int) -> Int {
+        availableShutterSpeedDenominators.min(by: {
+            abs($0 - denominator) < abs($1 - denominator)
+        }) ?? idealShutterSpeedDenominator(for: selectedFrameRate)
+    }
+
+    private func shutterDuration(for denominator: Int) -> CMTime {
+        let seconds = 1.0 / Double(max(denominator, 1))
+        return CMTime(seconds: seconds, preferredTimescale: 1_000_000)
+    }
+
+    private func clampedShutterDuration(for denominator: Int, device: AVCaptureDevice) -> CMTime {
+        let requestedSeconds = 1.0 / Double(max(denominator, 1))
+        let minSeconds = CMTimeGetSeconds(device.activeFormat.minExposureDuration)
+        let maxSeconds = min(
+            CMTimeGetSeconds(device.activeFormat.maxExposureDuration),
+            1.0 / Double(max(selectedFrameRate, 1))
+        )
+        let clampedSeconds = min(max(requestedSeconds, minSeconds), maxSeconds)
+        return CMTime(seconds: clampedSeconds, preferredTimescale: 1_000_000)
+    }
+
+    private func clampedISO(_ iso: Float, for device: AVCaptureDevice) -> Float {
+        min(max(iso, device.activeFormat.minISO), device.activeFormat.maxISO)
+    }
+
+    private func applyExposureConfiguration(on device: AVCaptureDevice) {
+        switch (proExposureEnabled, proExposureMode) {
+        case (true, .shutterAngle180):
+            let duration = clampedShutterDuration(
+                for: idealShutterSpeedDenominator(for: selectedFrameRate),
+                device: device
+            )
+            device.setExposureModeCustom(
+                duration: duration,
+                iso: AVCaptureDevice.currentISO,
+                completionHandler: nil
+            )
+
+        case (true, .manual):
+            let duration = clampedShutterDuration(
+                for: manualShutterSpeedDenominator,
+                device: device
+            )
+            device.setExposureModeCustom(
+                duration: duration,
+                iso: clampedISO(manualISO, for: device),
+                completionHandler: nil
+            )
+
+        default:
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            } else if device.isExposureModeSupported(.autoExpose) {
+                device.exposureMode = .autoExpose
+            }
+            device.setExposureTargetBias(exposureBias) { _ in }
+        }
+    }
+
+    private func updateProExposureAutomationState() {
+        stopProExposureAutomation()
+
+        guard proExposureEnabled,
+              proExposureMode == .shutterAngle180,
+              !isRecording,
+              isSessionConfigured,
+              session.isRunning else { return }
+
+        let timer = DispatchSource.makeTimerSource(queue: sessionQueue)
+        timer.schedule(deadline: .now() + .milliseconds(350), repeating: .milliseconds(250))
+        timer.setEventHandler { [weak self] in
+            self?.adjustISOFor180DegreeExposure()
+        }
+        proExposureAutomationTimer = timer
+        timer.resume()
+    }
+
+    private func stopProExposureAutomation() {
+        proExposureAutomationTimer?.cancel()
+        proExposureAutomationTimer = nil
+    }
+
+    private func adjustISOFor180DegreeExposure() {
+        guard proExposureEnabled,
+              proExposureMode == .shutterAngle180,
+              let device = videoInput?.device ?? activeDevice else { return }
+
+        let offset = device.exposureTargetOffset
+        guard offset.isFinite, abs(offset) > 0.15 else { return }
+
+        let currentISO = device.iso
+        let correctionFactor = powf(2.0, -offset * 0.55)
+        let adjustedISO = clampedISO(currentISO * correctionFactor, for: device)
+        guard abs(adjustedISO - currentISO) > 1.0 else { return }
+
+        do {
+            try device.lockForConfiguration()
+            let duration = clampedShutterDuration(
+                for: idealShutterSpeedDenominator(for: selectedFrameRate),
+                device: device
+            )
+            device.setExposureModeCustom(duration: duration, iso: adjustedISO, completionHandler: nil)
+            device.unlockForConfiguration()
+        } catch {
+            presentStatusMessage("180° exposure update failed.")
         }
     }
 
@@ -446,6 +691,7 @@ final class CameraManager: NSObject, ObservableObject {
         sessionQueue.async {
             guard !self.isRecording else { return }
             self.videoDataOutput.alwaysDiscardsLateVideoFrames = false
+            self.stopProExposureAutomation()
             self.prepareDeviceForRecording()
 
             let fileName = UUID().uuidString + ".mov"
@@ -540,15 +786,29 @@ final class CameraManager: NSObject, ObservableObject {
     private func requestAudioPermissionAndSetup() {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized, .denied, .restricted:
+            requestPhotoLibraryPermissionIfNeeded()
             setupSessionIfNeeded()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { _ in
                 DispatchQueue.main.async {
+                    self.requestPhotoLibraryPermissionIfNeeded()
                     self.setupSessionIfNeeded()
                 }
             }
         @unknown default:
+            requestPhotoLibraryPermissionIfNeeded()
             setupSessionIfNeeded()
+        }
+    }
+
+    private func requestPhotoLibraryPermissionIfNeeded() {
+        switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
+        case .authorized, .limited, .denied, .restricted:
+            break
+        case .notDetermined:
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in }
+        @unknown default:
+            break
         }
     }
 
@@ -800,17 +1060,15 @@ final class CameraManager: NSObject, ObservableObject {
             if device.isFocusModeSupported(.continuousAutoFocus) && !manualFocusEnabled {
                 device.focusMode = .continuousAutoFocus
             }
-            if device.isExposureModeSupported(.continuousAutoExposure) {
-                device.exposureMode = .continuousAutoExposure
-            }
             applyWhiteBalanceState(on: device)
-            device.setExposureTargetBias(exposureBias) { _ in }
+            applyExposureConfiguration(on: device)
             if manualFocusEnabled && device.isLockingFocusWithCustomLensPositionSupported {
                 device.setFocusModeLocked(lensPosition: manualFocusPosition, completionHandler: nil)
             }
             device.unlockForConfiguration()
 
             updateSupportedStabilizationModes(for: selection.format)
+            updateProExposureAutomationState()
 
             DispatchQueue.main.async {
                 self.activeDevice = device
@@ -818,6 +1076,8 @@ final class CameraManager: NSObject, ObservableObject {
                 self.supportsManualFocus = device.isLockingFocusWithCustomLensPositionSupported
                 self.colorProfile = selection.profile
                 self.canRecord = true
+                self.manualISO = self.clampedISO(self.manualISO, for: device)
+                self.manualShutterSpeedDenominator = self.nearestShutterSpeedDenominator(to: self.manualShutterSpeedDenominator)
             }
         } catch let error as CameraConfigurationError {
             DispatchQueue.main.async {
@@ -1305,7 +1565,14 @@ final class CameraManager: NSObject, ObservableObject {
                 device.whiteBalanceMode = .locked
             }
 
-            if exposureLockedDuringRecording, device.isExposureModeSupported(.locked) {
+            if proExposureEnabled, proExposureMode == .shutterAngle180 {
+                // In 180 mode the preview path is already driving a custom shutter
+                // with auto-ISO assistance. At record start we only stop that ISO
+                // automation and keep the exact current exposure to avoid a visible
+                // ISO jump in the first recorded frames.
+            } else if proExposureEnabled {
+                applyExposureConfiguration(on: device)
+            } else if exposureLockedDuringRecording, device.isExposureModeSupported(.locked) {
                 device.exposureMode = .locked
             } else if device.isExposureModeSupported(.continuousAutoExposure) {
                 device.exposureMode = .continuousAutoExposure
@@ -1327,20 +1594,18 @@ final class CameraManager: NSObject, ObservableObject {
 
             applyWhiteBalanceState(on: device)
 
-            if device.isExposureModeSupported(.continuousAutoExposure) {
-                device.exposureMode = .continuousAutoExposure
-            }
+            applyExposureConfiguration(on: device)
 
             if manualFocusEnabled, device.isLockingFocusWithCustomLensPositionSupported {
                 device.setFocusModeLocked(lensPosition: manualFocusPosition, completionHandler: nil)
             } else if device.isFocusModeSupported(.continuousAutoFocus) {
                 device.focusMode = .continuousAutoFocus
             }
-
-            device.setExposureTargetBias(exposureBias) { _ in }
         } catch {
             presentStatusMessage("Unable to restore camera controls after recording.")
         }
+
+        updateProExposureAutomationState()
     }
 
     private func applyWhiteBalanceState(on device: AVCaptureDevice) {
@@ -1396,6 +1661,15 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
 
+        if defaults.object(forKey: SettingsKey.proExposureEnabled) != nil {
+            proExposureEnabled = defaults.bool(forKey: SettingsKey.proExposureEnabled)
+        }
+
+        if let rawProMode = defaults.string(forKey: SettingsKey.proExposureMode),
+           let mode = ProExposureMode(rawValue: rawProMode) {
+            proExposureMode = mode
+        }
+
         if defaults.object(forKey: SettingsKey.whiteBalanceLockedDuringRecording) != nil {
             whiteBalanceLockedDuringRecording = defaults.bool(forKey: SettingsKey.whiteBalanceLockedDuringRecording)
         }
@@ -1424,6 +1698,16 @@ final class CameraManager: NSObject, ObservableObject {
             manualFocusPosition = Float(savedManualFocusPosition)
         }
 
+        if let savedShutterDenominator = defaults.object(forKey: SettingsKey.manualShutterSpeedDenominator) as? Int {
+            manualShutterSpeedDenominator = savedShutterDenominator
+        } else {
+            manualShutterSpeedDenominator = idealShutterSpeedDenominator(for: selectedFrameRate)
+        }
+
+        if let savedISO = defaults.object(forKey: SettingsKey.manualISO) as? Double {
+            manualISO = Float(savedISO)
+        }
+
         usesCustomBitrate = defaults.bool(forKey: SettingsKey.usesCustomBitrate)
         if usesCustomBitrate,
            let savedBitrate = defaults.object(forKey: SettingsKey.recordingBitrateMbps) as? Double,
@@ -1447,7 +1731,7 @@ final class CameraManager: NSObject, ObservableObject {
                     device.focusPointOfInterest = point
                 }
 
-                if device.isExposurePointOfInterestSupported {
+                if !self.proExposureEnabled && device.isExposurePointOfInterestSupported {
                     device.exposurePointOfInterest = point
                 }
 
@@ -1455,14 +1739,14 @@ final class CameraManager: NSObject, ObservableObject {
                     if device.isFocusModeSupported(.autoFocus) {
                         device.focusMode = .autoFocus
                     }
-                    if device.isExposureModeSupported(.autoExpose) {
+                    if !self.proExposureEnabled && device.isExposureModeSupported(.autoExpose) {
                         device.exposureMode = .autoExpose
                     }
                 } else {
                     if device.isFocusModeSupported(.continuousAutoFocus) {
                         device.focusMode = .continuousAutoFocus
                     }
-                    if device.isExposureModeSupported(.continuousAutoExposure) {
+                    if !self.proExposureEnabled && device.isExposureModeSupported(.continuousAutoExposure) {
                         device.exposureMode = .continuousAutoExposure
                     }
                 }
@@ -1499,7 +1783,7 @@ final class CameraManager: NSObject, ObservableObject {
                 device.focusMode = .locked
             }
 
-            if device.isExposureModeSupported(.locked) {
+            if !proExposureEnabled && device.isExposureModeSupported(.locked) {
                 device.exposureMode = .locked
             }
             device.isSubjectAreaChangeMonitoringEnabled = false
@@ -1560,11 +1844,13 @@ final class CameraManager: NSObject, ObservableObject {
             guard self.isSessionConfigured, !self.session.isRunning else { return }
             self.session.startRunning()
             self.configureOutput()
+            self.updateProExposureAutomationState()
         }
     }
 
     private func stopSession() {
         sessionQueue.async {
+            self.stopProExposureAutomation()
             guard self.session.isRunning else { return }
             self.session.stopRunning()
         }

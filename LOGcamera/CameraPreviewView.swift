@@ -5,12 +5,14 @@ import MetalKit
 
 struct CameraPreviewView: UIViewRepresentable {
     @ObservedObject var cameraManager: CameraManager
+    let isSuspended: Bool
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
         view.configureSession(cameraManager.session)
         view.bindPreviewFrames(to: cameraManager)
         view.setPreviewLookMode(cameraManager.previewLookMode)
+        view.setPreviewSuspended(isSuspended)
         view.applyConnectionConfiguration(from: cameraManager)
         view.onFocusSelection = { [weak cameraManager] capturePoint, previewPoint, shouldLock in
             guard let cameraManager else { return }
@@ -31,6 +33,7 @@ struct CameraPreviewView: UIViewRepresentable {
         uiView.configureSession(cameraManager.session)
         uiView.bindPreviewFrames(to: cameraManager)
         uiView.setPreviewLookMode(cameraManager.previewLookMode)
+        uiView.setPreviewSuspended(isSuspended)
         uiView.applyConnectionConfiguration(from: cameraManager)
         uiView.onFocusSelection = { [weak cameraManager] capturePoint, previewPoint, shouldLock in
             guard let cameraManager else { return }
@@ -61,6 +64,7 @@ final class PreviewView: UIView {
     private var previewRenderer: MetalPreviewRenderer?
     private var currentPreviewRotationAngle: CGFloat = 0
     private var currentPreviewLookMode: PreviewLookMode = .log
+    private var isPreviewSuspended = false
 
     private lazy var tapGestureRecognizer = UITapGestureRecognizer(
         target: self,
@@ -78,6 +82,8 @@ final class PreviewView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        clipsToBounds = true
+        layer.masksToBounds = true
         setupPreviewSurface()
         setupConversionLayer()
         setupGestures()
@@ -85,6 +91,8 @@ final class PreviewView: UIView {
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        clipsToBounds = true
+        layer.masksToBounds = true
         setupPreviewSurface()
         setupConversionLayer()
         setupGestures()
@@ -130,6 +138,7 @@ final class PreviewView: UIView {
         boundCameraManager = cameraManager
         previewFrameCancellable = cameraManager.previewFramePublisher.sink { [weak self] frame in
             guard let self else { return }
+            guard !self.isPreviewSuspended else { return }
             self.previewRenderer?.enqueue(frame)
         }
         applyConnectionConfiguration(from: cameraManager)
@@ -139,6 +148,15 @@ final class PreviewView: UIView {
         currentPreviewLookMode = mode
         previewRenderer?.setPreviewLookMode(mode)
         updateVisiblePreviewMode()
+    }
+
+    func setPreviewSuspended(_ isSuspended: Bool) {
+        guard isPreviewSuspended != isSuspended else { return }
+        isPreviewSuspended = isSuspended
+        previewSurface.isPaused = isSuspended
+        if isSuspended {
+            previewRenderer?.clear()
+        }
     }
 
     private func setupPreviewSurface() {
@@ -242,8 +260,13 @@ final class PreviewView: UIView {
             ? CGSize(width: baseSize.height, height: baseSize.width)
             : baseSize
 
-        previewSurface.bounds = CGRect(origin: .zero, size: rotatedSize)
-        previewSurface.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        previewSurface.transform = .identity
+        previewSurface.frame = CGRect(
+            x: (bounds.width - rotatedSize.width) / 2,
+            y: (bounds.height - rotatedSize.height) / 2,
+            width: rotatedSize.width,
+            height: rotatedSize.height
+        )
 
         var transform = CGAffineTransform(rotationAngle: currentPreviewRotationAngle * (.pi / 180))
         if activeDevice?.position == .front {
