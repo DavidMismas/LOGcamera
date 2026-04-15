@@ -228,6 +228,11 @@ private struct CameraScreen: View {
             .overlay {
                 FocusFeedbackOverlay(feedback: cameraManager.focusFeedback)
             }
+            .overlay(alignment: focusLockBadgeAlignment) {
+                if cameraManager.isFocusExposureLocked {
+                    focusLockStatusBadge
+                }
+            }
             .overlay(alignment: .top) {
                 if cameraManager.isRecording {
                     Text(cameraManager.recordingTimeText)
@@ -313,6 +318,19 @@ private struct CameraScreen: View {
                 Text("Exposure")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
+                Button {
+                    cameraManager.setExposureBias(0)
+                } label: {
+                    Text("0.0")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(isExposureAdjusted ? Color.black : AppTheme.textSecondary)
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .metalCapsulePanel(isActive: isExposureAdjusted)
+                }
+                .buttonStyle(.plain)
+                .disabled(!isExposureAdjusted)
+
                 Text(String(format: "%+.1f EV", cameraManager.exposureBias))
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundStyle(AppTheme.textSecondary)
@@ -485,6 +503,28 @@ private struct CameraScreen: View {
 
     private var showsQuickAdjustmentPanel: Bool {
         showsExposurePanel || showsWhiteBalancePanel
+    }
+
+    private var isLandscapePreviewOrientation: Bool {
+        abs(previewControlRotationDegrees) == 90
+    }
+
+    private var focusLockBadgeAlignment: Alignment {
+        isLandscapePreviewOrientation ? .trailing : .top
+    }
+
+    private var focusLockStatusBadge: some View {
+        Text("AE/AF LOCK")
+            .font(.system(size: 11, weight: .black, design: .monospaced))
+            .tracking(0.5)
+            .foregroundStyle(AppTheme.textPrimary)
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .metalCapsulePanel()
+            .rotationEffect(.degrees(previewControlRotationDegrees))
+            .padding(.top, isLandscapePreviewOrientation ? 0 : (cameraManager.isRecording ? 58 : 18))
+            .padding(.trailing, isLandscapePreviewOrientation ? 0 : 0)
+            .allowsHitTesting(false)
     }
 
     private func updatePreviewControlRotation(for orientation: UIDeviceOrientation) {
@@ -833,16 +873,7 @@ private struct FocusFeedbackOverlay: View {
     var body: some View {
         GeometryReader { proxy in
             if let feedback {
-                VStack(spacing: 8) {
-                    if feedback.isLocked {
-                        Text("AE/AF Lock")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundStyle(AppTheme.textPrimary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .metalCapsulePanel()
-                    }
-
+                ZStack {
                     ZStack {
                         Circle()
                             .stroke(feedback.isLocked ? AppTheme.accent : AppTheme.textPrimary, lineWidth: 2)
@@ -853,10 +884,10 @@ private struct FocusFeedbackOverlay: View {
                             .frame(width: 12, height: 12)
                     }
                 }
-                    .position(
-                        x: feedback.previewPoint.x * proxy.size.width,
-                        y: max(54, feedback.previewPoint.y * proxy.size.height - (feedback.isLocked ? 18 : 0))
-                    )
+                .position(
+                    x: feedback.previewPoint.x * proxy.size.width,
+                    y: feedback.previewPoint.y * proxy.size.height
+                )
                     .transition(.scale.combined(with: .opacity))
             }
         }

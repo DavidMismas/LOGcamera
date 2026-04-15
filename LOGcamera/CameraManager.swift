@@ -167,6 +167,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var activeLensID: String?
     @Published private(set) var activeDevice: AVCaptureDevice?
     @Published private(set) var focusFeedback: FocusFeedback?
+    @Published private(set) var isFocusExposureLocked = false
     @Published private(set) var canRecord = false
     @Published private(set) var colorProfile: CaptureColorProfile = .unavailable
     @Published private(set) var exposureBias: Float = 0
@@ -312,6 +313,8 @@ final class CameraManager: NSObject, ObservableObject {
     private let sessionQueue = DispatchQueue(label: "com.logcamera.sessionQueue")
     private let feedbackDuration: TimeInterval = 2.0
     private let focusLockDelay: TimeInterval = 0.2
+    private let defaultAutoExposureRectOfInterest = CGRect(x: 0.18, y: 0.18, width: 0.64, height: 0.64)
+    private let tappedAutoExposureRectSize: CGFloat = 0.28
 
     private var isSessionConfigured = false
     private var videoInput: AVCaptureDeviceInput?
@@ -541,6 +544,7 @@ final class CameraManager: NSObject, ObservableObject {
             )
 
         default:
+            applyDefaultAutoExposureRegion(on: device)
             if device.isExposureModeSupported(.continuousAutoExposure) {
                 device.exposureMode = .continuousAutoExposure
             } else if device.isExposureModeSupported(.autoExpose) {
@@ -597,6 +601,35 @@ final class CameraManager: NSObject, ObservableObject {
         } catch {
             presentStatusMessage("180° exposure update failed.")
         }
+    }
+
+    private func lockCurrentExposureForRecording(on device: AVCaptureDevice) {
+        let duration = device.exposureDuration
+        let iso = clampedISO(device.iso, for: device)
+        device.setExposureModeCustom(duration: duration, iso: iso, completionHandler: nil)
+    }
+
+    private func applyDefaultAutoExposureRegion(on device: AVCaptureDevice) {
+        guard !isFocusExposureLocked else { return }
+
+        if device.isExposurePointOfInterestSupported {
+            device.exposurePointOfInterest = CGPoint(x: 0.5, y: 0.5)
+        }
+        if device.isExposureRectOfInterestSupported {
+            device.exposureRectOfInterest = defaultAutoExposureRectOfInterest
+        }
+    }
+
+    private func autoExposureRect(around point: CGPoint) -> CGRect {
+        let halfSize = tappedAutoExposureRectSize / 2
+        let originX = min(max(point.x - halfSize, 0), 1 - tappedAutoExposureRectSize)
+        let originY = min(max(point.y - halfSize, 0), 1 - tappedAutoExposureRectSize)
+        return CGRect(
+            x: originX,
+            y: originY,
+            width: tappedAutoExposureRectSize,
+            height: tappedAutoExposureRectSize
+        )
     }
 
     func setWhiteBalanceTemperature(_ value: Double) {
@@ -736,6 +769,9 @@ final class CameraManager: NSObject, ObservableObject {
 
     func focus(at point: CGPoint) {
         guard !manualFocusEnabled else { return }
+        DispatchQueue.main.async {
+            self.isFocusExposureLocked = false
+        }
         updateFocus(at: point, shouldLockAfterFocus: false)
     }
 
@@ -965,6 +1001,9 @@ final class CameraManager: NSObject, ObservableObject {
     private func installVideoInput(device: AVCaptureDevice) -> Bool {
         do {
             let input = try AVCaptureDeviceInput(device: device)
+            if #available(iOS 12.0, *) {
+                input.unifiedAutoExposureDefaultsEnabled = true
+            }
             guard session.canAddInput(input) else { return false }
             session.addInput(input)
             videoInput = input
@@ -1568,14 +1607,19 @@ final class CameraManager: NSObject, ObservableObject {
             if proExposureEnabled, proExposureMode == .shutterAngle180 {
                 // In 180 mode the preview path is already driving a custom shutter
                 // with auto-ISO assistance. At record start we only stop that ISO
-                // automation and keep the exact current exposure to avoid a visible
-                // ISO jump in the first recorded frames.
+                // automation. If recording exposure lock is enabled, explicitly
+                // freeze the current duration and ISO so Pro recording keeps the
+                // exposure state selected in preview.
+                if exposureLockedDuringRecording {
+                    lockCurrentExposureForRecording(on: device)
+                }
             } else if proExposureEnabled {
                 applyExposureConfiguration(on: device)
-            } else if exposureLockedDuringRecording, device.isExposureModeSupported(.locked) {
-                device.exposureMode = .locked
-            } else if device.isExposureModeSupported(.continuousAutoExposure) {
-                device.exposureMode = .continuousAutoExposure
+            } else if exposureLockedDuringRecording {
+                // Preserve the preview exposure exactly when recording lock is on.
+                lockCurrentExposureForRecording(on: device)
+            } else {
+                // Leave the current preview exposure state untouched.
             }
 
             if manualFocusEnabled, device.isLockingFocusWithCustomLensPositionSupported {
@@ -1733,6 +1777,9 @@ final class CameraManager: NSObject, ObservableObject {
 
                 if !self.proExposureEnabled && device.isExposurePointOfInterestSupported {
                     device.exposurePointOfInterest = point
+                    if device.isExposureRectOfInterestSupported {
+                        device.exposureRectOfInterest = self.autoExposureRect(around: point)
+                    }
                 }
 
                 if shouldLockAfterFocus {
@@ -1787,6 +1834,9 @@ final class CameraManager: NSObject, ObservableObject {
                 device.exposureMode = .locked
             }
             device.isSubjectAreaChangeMonitoringEnabled = false
+            DispatchQueue.main.async {
+                self.isFocusExposureLocked = true
+            }
         } catch {
             presentStatusMessage("Lock focus failed.")
         }
