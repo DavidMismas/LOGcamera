@@ -144,8 +144,16 @@ private struct CameraScreen: View {
             VStack(spacing: 0) {
                 topControlStrip
                     .offset(y: -3)
-                previewSurface
-                Spacer(minLength: 0)
+                if cameraManager.captureMode == .photo {
+                    Spacer(minLength: 0)
+                    previewSurface
+                    photoBottomBar
+                        .padding(.top, 14)
+                        .padding(.horizontal, 14)
+                } else {
+                    previewSurface
+                    Spacer(minLength: 0)
+                }
             }
             .ignoresSafeArea(edges: .horizontal)
         }
@@ -162,54 +170,62 @@ private struct CameraScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
             updatePreviewControlRotation(for: UIDevice.current.orientation)
         }
+        .onChange(of: cameraManager.captureMode) { _, _ in
+            showsExposurePanel = false
+            showsWhiteBalancePanel = false
+        }
     }
 
     private var topControlStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                compactToggleChip(title: "PRO", isSelected: cameraManager.proExposureEnabled) {
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        showsExposurePanel = false
-                        cameraManager.setProExposureEnabled(!cameraManager.proExposureEnabled)
-                    }
-                }
-
-                if cameraManager.proExposureEnabled {
-                    Menu {
-                        ForEach(ProExposureMode.allCases) { mode in
-                            Button(mode.title) {
-                                showsExposurePanel = false
-                                cameraManager.selectProExposureMode(mode)
-                            }
+                if cameraManager.captureMode == .photo {
+                    compactReadOnlyChip(title: cameraManager.appleProRAWEnabled ? "ProRAW DNG" : "RAW Off")
+                } else {
+                    compactToggleChip(title: "PRO", isSelected: cameraManager.proExposureEnabled) {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            showsExposurePanel = false
+                            cameraManager.setProExposureEnabled(!cameraManager.proExposureEnabled)
                         }
-                    } label: {
-                        compactMenuChip(title: cameraManager.proExposureMode.title)
                     }
 
-                    if cameraManager.proExposureMode == .shutterAngle180 {
-                        compactReadOnlyChip(title: "S \(cameraManager.currentShutterSpeedLabel)")
-                        compactReadOnlyChip(title: "ISO Auto")
-                    }
-
-                    if cameraManager.proExposureMode == .manual {
+                    if cameraManager.proExposureEnabled {
                         Menu {
-                            ForEach(cameraManager.availableShutterSpeedDenominators, id: \.self) { denominator in
-                                Button("1/\(denominator)") {
-                                    cameraManager.setManualShutterSpeedDenominator(denominator)
+                            ForEach(ProExposureMode.allCases) { mode in
+                                Button(mode.title) {
+                                    showsExposurePanel = false
+                                    cameraManager.selectProExposureMode(mode)
                                 }
                             }
                         } label: {
-                            compactMenuChip(title: "S \(cameraManager.currentShutterSpeedLabel)")
+                            compactMenuChip(title: cameraManager.proExposureMode.title)
                         }
 
-                        Menu {
-                            ForEach(cameraManager.availableISOValues, id: \.self) { iso in
-                                Button(String(format: "ISO %.0f", iso)) {
-                                    cameraManager.setManualISO(iso)
+                        if cameraManager.proExposureMode == .shutterAngle180 {
+                            compactReadOnlyChip(title: "S \(cameraManager.currentShutterSpeedLabel)")
+                            compactReadOnlyChip(title: "ISO Auto")
+                        }
+
+                        if cameraManager.proExposureMode == .manual {
+                            Menu {
+                                ForEach(cameraManager.availableShutterSpeedDenominators, id: \.self) { denominator in
+                                    Button("1/\(denominator)") {
+                                        cameraManager.setManualShutterSpeedDenominator(denominator)
+                                    }
                                 }
+                            } label: {
+                                compactMenuChip(title: "S \(cameraManager.currentShutterSpeedLabel)")
                             }
-                        } label: {
-                            compactMenuChip(title: "ISO \(cameraManager.currentISOValueLabel)")
+
+                            Menu {
+                                ForEach(cameraManager.availableISOValues, id: \.self) { iso in
+                                    Button(String(format: "ISO %.0f", iso)) {
+                                        cameraManager.setManualISO(iso)
+                                    }
+                                }
+                            } label: {
+                                compactMenuChip(title: "ISO \(cameraManager.currentISOValueLabel)")
+                            }
                         }
                     }
                 }
@@ -222,7 +238,7 @@ private struct CameraScreen: View {
 
     private var previewSurface: some View {
         CameraPreviewView(cameraManager: cameraManager, isSuspended: showsControlMenu)
-            .aspectRatio(9.0 / 16.0, contentMode: .fit)
+            .aspectRatio(cameraManager.previewAspectRatio, contentMode: .fit)
             .frame(maxWidth: .infinity)
             .background(Color.black)
             .overlay {
@@ -245,9 +261,15 @@ private struct CameraScreen: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                bottomOverlay
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
+                Group {
+                    if cameraManager.captureMode == .photo {
+                        photoPreviewOverlay
+                    } else {
+                        bottomOverlay
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
             }
     }
 
@@ -263,23 +285,81 @@ private struct CameraScreen: View {
             }
 
             ZStack(alignment: .bottom) {
-                HStack(alignment: .bottom) {
-                    lensPickerButton
-                        .padding(.bottom, 12)
-                    Spacer()
-                    quickAdjustments
-                        .padding(.bottom, 12)
-                }
+                if cameraManager.captureMode == .video {
+                    HStack(alignment: .bottom) {
+                        Spacer()
+                        quickAdjustments
+                            .padding(.bottom, 12)
+                    }
 
-                recordButton
+                    VStack(spacing: 12) {
+                        lensPickerStrip
+                        ZStack {
+                            recordButton
+
+                            captureModeSwitchButton
+                                .offset(x: captureModeSwitchButtonOffset, y: 6)
+                        }
+                    }
                     .padding(.bottom, 2)
+                } else {
+                    HStack(alignment: .bottom) {
+                        Spacer()
+                        controlsButton
+                            .padding(.bottom, 12)
+                    }
+
+                    VStack(spacing: 12) {
+                        lensPickerStrip
+                        ZStack {
+                            recordButton
+
+                            captureModeSwitchButton
+                                .offset(x: captureModeSwitchButtonOffset, y: 6)
+                        }
+                    }
+                    .padding(.bottom, 2)
+                }
             }
             .frame(
                 maxWidth: .infinity,
-                minHeight: showsQuickAdjustmentPanel ? 210 : 138,
+                minHeight: cameraManager.captureMode == .video
+                    ? (showsQuickAdjustmentPanel ? 220 : 168)
+                    : 136,
                 alignment: .bottom
             )
         }
+    }
+
+    private var photoPreviewOverlay: some View {
+        VStack(spacing: 10) {
+            if let statusMessage = cameraManager.statusMessage {
+                Text(statusMessage)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .metalRoundedPanel(cornerRadius: 16)
+            }
+
+            lensPickerStrip
+                .padding(.bottom, 2)
+        }
+        .frame(maxWidth: .infinity, minHeight: 72, alignment: .bottom)
+    }
+
+    private var photoBottomBar: some View {
+        ZStack(alignment: .center) {
+            HStack {
+                captureModeSwitchButton
+                Spacer()
+                controlsButton
+                    .frame(width: 62, height: 62)
+            }
+
+            recordButton
+        }
+        .frame(maxWidth: .infinity, minHeight: 118, alignment: .center)
     }
 
     private var quickAdjustments: some View {
@@ -399,46 +479,35 @@ private struct CameraScreen: View {
         .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
-    private var lensPickerButton: some View {
-        Menu {
+    private var lensPickerStrip: some View {
+        HStack(spacing: 8) {
             ForEach(cameraManager.availableLenses) { lens in
-                Button(lens.shortName) {
+                Button {
                     cameraManager.switchLens(to: lens.id)
+                } label: {
+                    Text(lens.selectorTitle)
+                        .font(.system(size: 13, weight: .black, design: .monospaced))
+                        .foregroundStyle(cameraManager.activeLensID == lens.id ? Color.black : AppTheme.textPrimary)
+                        .frame(width: 34, height: 34)
+                        .background(
+                            Circle()
+                                .fill(cameraManager.activeLensID == lens.id ? AppTheme.accent : Color.black.opacity(0.60))
+                        )
+                        .overlay(
+                            Circle()
+                                .stroke(cameraManager.activeLensID == lens.id ? Color.white.opacity(0.18) : AppTheme.border, lineWidth: 1)
+                        )
+                        .rotationEffect(.degrees(previewControlRotationDegrees))
                 }
+                .buttonStyle(.plain)
+                .disabled(cameraManager.isCaptureBusy)
             }
-        } label: {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(activeLensShortName)
-                        .font(.system(size: 17, weight: .bold, design: .monospaced))
-                    if cameraManager.activeLensSummary.caseInsensitiveCompare(activeLensShortName) != .orderedSame {
-                        Text(cameraManager.activeLensSummary)
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(AppTheme.textSecondary)
-                    }
-                }
-
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(AppTheme.textSecondary)
-            }
-            .foregroundStyle(AppTheme.textPrimary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .metalCapsulePanel()
         }
-        .buttonStyle(.plain)
-        .disabled(cameraManager.isRecording)
-        .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
     private var recordButton: some View {
         Button {
-            if cameraManager.isRecording {
-                cameraManager.stopRecording()
-            } else {
-                cameraManager.startRecording()
-            }
+            cameraManager.triggerPrimaryCapture()
         } label: {
             ZStack {
                 Circle()
@@ -454,13 +523,23 @@ private struct CameraScreen: View {
                     RoundedRectangle(cornerRadius: 12)
                         .fill(AppTheme.recordLive)
                         .frame(width: 32, height: 32)
+                } else if cameraManager.isPhotoCaptureInProgress {
+                    Circle()
+                        .fill(Color.white.opacity(0.78))
+                        .frame(width: 44, height: 44)
                 } else {
                     Circle()
-                        .fill(cameraManager.canRecord ? AppTheme.activeGradient : LinearGradient(colors: [Color.gray.opacity(0.65), Color.gray.opacity(0.28)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(
+                            cameraManager.captureMode == .photo
+                                ? LinearGradient(colors: [Color.white.opacity(0.98), Color.white.opacity(0.82)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                : (cameraManager.canTriggerCapture
+                                    ? AppTheme.activeGradient
+                                    : LinearGradient(colors: [Color.gray.opacity(0.65), Color.gray.opacity(0.28)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        )
                         .frame(width: 58, height: 58)
                 }
             }
-            .offset(y: 11)
+            .offset(y: cameraManager.captureMode == .photo ? 0 : 11)
             .frame(width: 124, height: 124)
             .contentShape(Circle())
         }
@@ -470,7 +549,27 @@ private struct CameraScreen: View {
                 .frame(width: 124, height: 124)
         )
         .buttonStyle(.plain)
-        .disabled(!cameraManager.canRecord && !cameraManager.isRecording)
+        .disabled(!cameraManager.canTriggerCapture)
+    }
+
+    private var captureModeSwitchButton: some View {
+        Button {
+            cameraManager.switchCaptureMode()
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: cameraManager.captureMode == .video ? "camera.fill" : "video.fill")
+                    .font(.system(size: 16, weight: .bold))
+                Text(cameraManager.captureMode.switchButtonTitle)
+                    .font(.system(size: 9, weight: .black, design: .monospaced))
+                    .tracking(0.7)
+            }
+            .foregroundStyle(AppTheme.textPrimary)
+            .frame(width: 62, height: 62)
+            .metalCirclePanel()
+        }
+        .buttonStyle(.plain)
+        .disabled(cameraManager.isCaptureBusy)
+        .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
     private var controlsButton: some View {
@@ -489,10 +588,6 @@ private struct CameraScreen: View {
         .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
-    private var activeLensShortName: String {
-        cameraManager.availableLenses.first(where: { $0.id == cameraManager.activeLensID })?.shortName ?? "Wide"
-    }
-
     private var isExposureAdjusted: Bool {
         abs(cameraManager.exposureBias) > 0.01
     }
@@ -507,6 +602,10 @@ private struct CameraScreen: View {
 
     private var isLandscapePreviewOrientation: Bool {
         abs(previewControlRotationDegrees) == 90
+    }
+
+    private var captureModeSwitchButtonOffset: CGFloat {
+        -132
     }
 
     private var focusLockBadgeAlignment: Alignment {
@@ -617,6 +716,9 @@ private struct CameraSettingsView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header
                     previewSection
+                    sectionHeader("Photo")
+                    photoSection
+                    sectionHeader("Video")
                     frameRateSection
                     stabilizationSection
                     lockSection
@@ -681,6 +783,26 @@ private struct CameraSettingsView: View {
                     }
                     .disabled(cameraManager.isRecording)
                 }
+            }
+        }
+    }
+
+    private var photoSection: some View {
+        settingsCard(title: "Capture") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Format")
+                        .foregroundStyle(.white.opacity(0.7))
+                    Spacer()
+                    Text(cameraManager.appleProRAWEnabled ? "ProRAW DNG" : "Unavailable")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(cameraManager.appleProRAWEnabled ? AppTheme.accent : .white.opacity(0.7))
+                }
+                .font(.system(size: 13, weight: .medium))
+
+                Text("Photo mode currently saves RAW DNG to Photos.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppTheme.textSecondary)
             }
         }
     }
@@ -778,6 +900,14 @@ private struct CameraSettingsView: View {
         .metalRoundedPanel(cornerRadius: 24)
     }
 
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 13, weight: .black, design: .monospaced))
+            .tracking(1.6)
+            .foregroundStyle(AppTheme.textPrimary)
+            .padding(.top, 4)
+    }
+
     private func selectionButton(title: String,
                                  isSelected: Bool,
                                  action: @escaping () -> Void) -> some View {
@@ -850,7 +980,7 @@ private struct PermissionView: View {
                     .font(.system(size: 24, weight: .bold))
                     .multilineTextAlignment(.center)
 
-                Text("Enable permissions in Settings to capture 4K HEVC video in Apple Log and save clips to Photos.")
+                Text("Enable permissions in Settings to capture ProRAW photos and 4K HEVC video, then save them to Photos.")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(AppTheme.textSecondary)
                     .multilineTextAlignment(.center)

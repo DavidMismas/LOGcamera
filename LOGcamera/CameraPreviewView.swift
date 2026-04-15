@@ -12,6 +12,7 @@ struct CameraPreviewView: UIViewRepresentable {
         view.configureSession(cameraManager.session)
         view.bindPreviewFrames(to: cameraManager)
         view.setPreviewLookMode(cameraManager.previewLookMode)
+        view.setCaptureMode(cameraManager.captureMode)
         view.setPreviewSuspended(isSuspended)
         view.applyConnectionConfiguration(from: cameraManager)
         view.onFocusSelection = { [weak cameraManager] capturePoint, previewPoint, shouldLock in
@@ -33,6 +34,7 @@ struct CameraPreviewView: UIViewRepresentable {
         uiView.configureSession(cameraManager.session)
         uiView.bindPreviewFrames(to: cameraManager)
         uiView.setPreviewLookMode(cameraManager.previewLookMode)
+        uiView.setCaptureMode(cameraManager.captureMode)
         uiView.setPreviewSuspended(isSuspended)
         uiView.applyConnectionConfiguration(from: cameraManager)
         uiView.onFocusSelection = { [weak cameraManager] capturePoint, previewPoint, shouldLock in
@@ -64,6 +66,7 @@ final class PreviewView: UIView {
     private var previewRenderer: MetalPreviewRenderer?
     private var currentPreviewRotationAngle: CGFloat = 0
     private var currentPreviewLookMode: PreviewLookMode = .log
+    private var currentCaptureMode: CaptureMode = .video
     private var isPreviewSuspended = false
 
     private lazy var tapGestureRecognizer = UITapGestureRecognizer(
@@ -147,6 +150,12 @@ final class PreviewView: UIView {
     func setPreviewLookMode(_ mode: PreviewLookMode) {
         currentPreviewLookMode = mode
         previewRenderer?.setPreviewLookMode(mode)
+        updateVisiblePreviewMode()
+    }
+
+    func setCaptureMode(_ mode: CaptureMode) {
+        guard currentCaptureMode != mode else { return }
+        currentCaptureMode = mode
         updateVisiblePreviewMode()
     }
 
@@ -276,7 +285,7 @@ final class PreviewView: UIView {
     }
 
     private func updateVisiblePreviewMode() {
-        let showMetalPreview = previewRenderer != nil
+        let showMetalPreview = previewRenderer != nil && currentCaptureMode == .video
         previewSurface.isHidden = !showMetalPreview
         previewSurface.alpha = 1
         conversionPreviewLayer.isHidden = showMetalPreview

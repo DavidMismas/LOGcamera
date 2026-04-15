@@ -12,10 +12,13 @@ struct FocusFeedback: Identifiable {
 
 struct LensOption: Identifiable, Hashable {
     let id: String
+    let deviceUniqueID: String
     let displayName: String
     let shortName: String
+    let selectorTitle: String
     let deviceType: AVCaptureDevice.DeviceType
     let position: AVCaptureDevice.Position
+    let zoomFactor: CGFloat
     let sortOrder: Int
 }
 
@@ -119,6 +122,31 @@ enum PreviewLookMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum CaptureMode: String, CaseIterable, Identifiable {
+    case video
+    case photo
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .video:
+            return "Video"
+        case .photo:
+            return "Photo"
+        }
+    }
+
+    var switchButtonTitle: String {
+        switch self {
+        case .video:
+            return "PHOTO"
+        case .photo:
+            return "VIDEO"
+        }
+    }
+}
+
 enum ProExposureMode: String, CaseIterable, Identifiable {
     case auto
     case shutterAngle180
@@ -140,6 +168,7 @@ enum ProExposureMode: String, CaseIterable, Identifiable {
 
 final class CameraManager: NSObject, ObservableObject {
     private enum SettingsKey {
+        static let captureMode = "camera.captureMode"
         static let selectedFrameRate = "camera.selectedFrameRate"
         static let whiteBalanceLockedDuringRecording = "camera.whiteBalanceLockedDuringRecording"
         static let exposureLockedDuringRecording = "camera.exposureLockedDuringRecording"
@@ -169,6 +198,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var focusFeedback: FocusFeedback?
     @Published private(set) var isFocusExposureLocked = false
     @Published private(set) var canRecord = false
+    @Published private(set) var canCapturePhoto = false
     @Published private(set) var colorProfile: CaptureColorProfile = .unavailable
     @Published private(set) var exposureBias: Float = 0
     @Published private(set) var manualFocusEnabled = false
@@ -177,10 +207,16 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var statusMessage: String?
     @Published private(set) var recordedVideoURL: URL?
     @Published private(set) var isRecording = false
+    @Published private(set) var isPhotoCaptureInProgress = false
     @Published private(set) var recordingDuration: TimeInterval = 0
     @Published private(set) var whiteBalanceTemperature = 5600.0
     @Published private(set) var usesManualWhiteBalance = false
+    @Published private(set) var appleProRAWSupported = false
+    @Published private(set) var appleProRAWEnabled = false
 
+    @Published var captureMode: CaptureMode = .video {
+        didSet { UserDefaults.standard.set(captureMode.rawValue, forKey: SettingsKey.captureMode) }
+    }
     @Published var selectedFrameRate = 30 {
         didSet { UserDefaults.standard.set(selectedFrameRate, forKey: SettingsKey.selectedFrameRate) }
     }
@@ -284,7 +320,12 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     var captureSummaryText: String {
-        "4K • \(selectedFrameRate) fps • HEVC • \(colorProfile.title)"
+        switch captureMode {
+        case .video:
+            return "4K • \(selectedFrameRate) fps • HEVC • \(colorProfile.title)"
+        case .photo:
+            return appleProRAWEnabled ? "ProRAW DNG" : "ProRAW Unavailable"
+        }
     }
 
     var activeLensSummary: String {
@@ -305,6 +346,23 @@ final class CameraManager: NSObject, ObservableObject {
         String(format: "%.0f Mb/s", recordingBitrateMbps)
     }
 
+    var previewAspectRatio: CGFloat {
+        captureMode == .photo ? (3.0 / 4.0) : (9.0 / 16.0)
+    }
+
+    var canTriggerCapture: Bool {
+        switch captureMode {
+        case .video:
+            return canRecord || isRecording
+        case .photo:
+            return canCapturePhoto && !isPhotoCaptureInProgress
+        }
+    }
+
+    var isCaptureBusy: Bool {
+        isRecording || isPhotoCaptureInProgress
+    }
+
     var whiteBalanceLabel: String {
         usesManualWhiteBalance ? String(format: "%.0f K", whiteBalanceTemperature) : "Auto"
     }
@@ -321,7 +379,9 @@ final class CameraManager: NSObject, ObservableObject {
     private var audioInput: AVCaptureDeviceInput?
     private let videoDataOutput = AVCaptureVideoDataOutput()
     private let audioDataOutput = AVCaptureAudioDataOutput()
+    private let photoOutput = AVCapturePhotoOutput()
     private var deviceRegistry: [String: AVCaptureDevice] = [:]
+    private var lensOptions: [LensOption] = []
     private var captureRotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var captureRotationObservation: NSKeyValueObservation?
     private var activeVideoStabilizationObservation: NSKeyValueObservation?
@@ -340,6 +400,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var currentCaptureRotationAngle: CGFloat = 0
     private let previewFrameSubject = PassthroughSubject<PreviewFrame, Never>()
     private var proExposureAutomationTimer: DispatchSourceTimer?
+    private var activePhotoProcessors: [Int64: PhotoCaptureProcessor] = [:]
 
     var previewFramePublisher: AnyPublisher<PreviewFrame, Never> {
         previewFrameSubject.eraseToAnyPublisher()
@@ -445,9 +506,10 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func switchLens(to lensID: String) {
-        guard !isRecording else { return }
+        guard !isCaptureBusy else { return }
         sessionQueue.async {
-            guard let device = self.deviceRegistry[lensID] else { return }
+            guard let lens = self.availableLenses.first(where: { $0.id == lensID }),
+                  let device = self.deviceRegistry[lensID] else { return }
             self.session.beginConfiguration()
             var shouldRefreshOutput = false
             defer {
@@ -455,6 +517,12 @@ final class CameraManager: NSObject, ObservableObject {
                 if shouldRefreshOutput {
                     self.configureOutput()
                 }
+            }
+
+            if self.videoInput?.device.uniqueID == lens.deviceUniqueID {
+                self.configureDeviceForCurrentSelection(inConfiguration: true, preferredLens: lens)
+                shouldRefreshOutput = true
+                return
             }
 
             if let currentInput = self.videoInput {
@@ -467,8 +535,48 @@ final class CameraManager: NSObject, ObservableObject {
                 return
             }
 
-            self.configureDeviceForCurrentSelection()
+            self.configureDeviceForCurrentSelection(inConfiguration: true, preferredLens: lens)
             shouldRefreshOutput = true
+        }
+    }
+
+    func switchCaptureMode() {
+        guard !isCaptureBusy else { return }
+        let nextMode: CaptureMode = captureMode == .video ? .photo : .video
+        captureMode = nextMode
+        sessionQueue.async {
+            self.stopProExposureAutomation()
+            guard self.isSessionConfigured else { return }
+            let currentDevice = self.videoInput?.device ?? self.activeDevice
+            self.session.beginConfiguration()
+            self.session.sessionPreset = nextMode == .photo ? .photo : .inputPriority
+            if let currentInput = self.videoInput {
+                self.session.removeInput(currentInput)
+                self.videoInput = nil
+            }
+            if let currentDevice {
+                guard self.installVideoInput(device: currentDevice) else {
+                    self.presentStatusMessage("Failed to reconfigure camera for \(nextMode.title.lowercased()) mode.")
+                    self.session.commitConfiguration()
+                    return
+                }
+            }
+            self.configureDeviceForCurrentSelection(inConfiguration: true)
+            self.session.commitConfiguration()
+            self.configureOutput()
+        }
+    }
+
+    func triggerPrimaryCapture() {
+        switch captureMode {
+        case .video:
+            if isRecording {
+                stopRecording()
+            } else {
+                startRecording()
+            }
+        case .photo:
+            capturePhoto()
         }
     }
 
@@ -715,6 +823,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func startRecording() {
+        guard captureMode == .video else { return }
         guard !isRecording else { return }
         guard canRecord else {
             presentStatusMessage("Current lens or FPS does not support 4K HEVC Apple Log capture.")
@@ -765,6 +874,74 @@ final class CameraManager: NSObject, ObservableObject {
         writerQueue.async {
             self.finishWriting()
         }
+    }
+
+    func capturePhoto() {
+        guard captureMode == .photo else { return }
+        guard !isPhotoCaptureInProgress else { return }
+        guard canCapturePhoto else {
+            presentStatusMessage("ProRAW capture is unavailable for the current lens.")
+            return
+        }
+
+        sessionQueue.async {
+            guard !self.isPhotoCaptureInProgress else { return }
+            guard let settings = self.makePhotoSettings() else {
+                self.presentStatusMessage("Could not configure ProRAW capture.")
+                return
+            }
+
+            settings.photoQualityPrioritization = .quality
+            if let connection = self.photoOutput.connection(with: .video),
+               connection.isVideoMirroringSupported {
+                connection.isVideoMirrored = (self.videoInput?.device ?? self.activeDevice)?.position == .front
+            }
+
+            let captureID = settings.uniqueID
+            let processor = PhotoCaptureProcessor { [weak self] rawData in
+                guard let self else { return }
+                self.sessionQueue.async {
+                    self.activePhotoProcessors[captureID] = nil
+                }
+                DispatchQueue.main.async {
+                    self.isPhotoCaptureInProgress = false
+                }
+
+                guard let rawData else {
+                    self.presentStatusMessage("RAW capture failed.")
+                    return
+                }
+
+                self.saveRawPhotoToPhotoLibrary(rawData)
+            }
+
+            self.activePhotoProcessors[captureID] = processor
+            DispatchQueue.main.async {
+                self.isPhotoCaptureInProgress = true
+            }
+            self.photoOutput.capturePhoto(with: settings, delegate: processor)
+        }
+    }
+
+    private func preferredAppleProRAWPixelFormatForCapture() -> OSType? {
+        guard #available(iOS 14.3, *) else { return nil }
+        guard photoOutput.isAppleProRAWEnabled else { return nil }
+        return photoOutput.availableRawPhotoPixelFormatTypes.first(where: AVCapturePhotoOutput.isAppleProRAWPixelFormat)
+    }
+
+    private func makePhotoSettings() -> AVCapturePhotoSettings? {
+        guard let rawPixelType = preferredAppleProRAWPixelFormatForCapture() else { return nil }
+        if let device = videoInput?.device ?? activeDevice,
+           let preferredDimensions = preferredPhotoDimensions(for: device) {
+            if photoOutput.maxPhotoDimensions.width != preferredDimensions.width ||
+                photoOutput.maxPhotoDimensions.height != preferredDimensions.height {
+                photoOutput.maxPhotoDimensions = preferredDimensions
+            }
+            let settings = AVCapturePhotoSettings(rawPixelFormatType: rawPixelType, processedFormat: nil)
+            settings.maxPhotoDimensions = preferredDimensions
+            return settings
+        }
+        return AVCapturePhotoSettings(rawPixelFormatType: rawPixelType, processedFormat: nil)
     }
 
     func focus(at point: CGPoint) {
@@ -854,7 +1031,7 @@ final class CameraManager: NSObject, ObservableObject {
             guard !self.isSessionConfigured else { return }
 
             self.session.beginConfiguration()
-            self.session.sessionPreset = .inputPriority
+            self.session.sessionPreset = self.captureMode == .photo ? .photo : .inputPriority
             self.session.automaticallyConfiguresCaptureDeviceForWideColor = false
 
             let options = self.discoverLenses()
@@ -869,9 +1046,10 @@ final class CameraManager: NSObject, ObservableObject {
 
             self.installAudioInputIfPossible()
 
+            self.installPhotoOutputIfPossible()
             self.installDataOutputsIfPossible()
 
-            self.configureDeviceForCurrentSelection()
+            self.configureDeviceForCurrentSelection(inConfiguration: true)
             self.configureOutput()
 
             self.session.commitConfiguration()
@@ -900,20 +1078,15 @@ final class CameraManager: NSObject, ObservableObject {
         let physicalDevices = allDevices.filter { !$0.isVirtualDevice }
         let devices = physicalDevices.isEmpty ? allDevices : physicalDevices
 
-        let optionPairs = devices.compactMap { device -> (LensOption, AVCaptureDevice)? in
-            guard let option = Self.makeLensOption(for: device) else { return nil }
-            return (option, device)
-        }
-
-        let options = optionPairs.map(\.0)
-            .sorted { lhs, rhs in
-                if lhs.sortOrder == rhs.sortOrder {
-                    return lhs.displayName < rhs.displayName
-                }
-                return lhs.sortOrder < rhs.sortOrder
+        let uniqueDevices = Dictionary(grouping: devices, by: \.deviceType).compactMap { $0.value.first }
+        let options = buildLensOptions(from: uniqueDevices)
+        lensOptions = options
+        deviceRegistry = Dictionary(
+            uniqueKeysWithValues: options.compactMap { option in
+                guard let device = uniqueDevices.first(where: { $0.uniqueID == option.deviceUniqueID }) else { return nil }
+                return (option.id, device)
             }
-
-        deviceRegistry = Dictionary(uniqueKeysWithValues: optionPairs.map { ($0.0.id, $0.1) })
+        )
 
         DispatchQueue.main.async {
             self.availableLenses = options
@@ -922,78 +1095,136 @@ final class CameraManager: NSObject, ObservableObject {
         return options
     }
 
-    private static func makeLensOption(for device: AVCaptureDevice) -> LensOption? {
-        switch (device.position, device.deviceType) {
-        case (.back, .builtInUltraWideCamera):
-            return LensOption(
-                id: device.uniqueID,
-                displayName: "Ultra Wide",
-                shortName: "Ultra Wide",
-                deviceType: device.deviceType,
-                position: device.position,
-                sortOrder: 0
+    private func buildLensOptions(from devices: [AVCaptureDevice]) -> [LensOption] {
+        let ultraDevice = devices.first(where: { $0.position == .back && $0.deviceType == .builtInUltraWideCamera })
+        let wideDevice = devices.first(where: { $0.position == .back && $0.deviceType == .builtInWideAngleCamera })
+        let teleDevice = devices.first(where: { $0.position == .back && $0.deviceType == .builtInTelephotoCamera })
+
+        var options: [LensOption] = []
+
+        if let ultraDevice {
+            options.append(
+                LensOption(
+                    id: "\(ultraDevice.uniqueID)-0.5x",
+                    deviceUniqueID: ultraDevice.uniqueID,
+                    displayName: "Ultra Wide",
+                    shortName: "Ultra Wide",
+                    selectorTitle: displayZoomFactorLabel(for: ultraDevice, zoomFactor: 1.0),
+                    deviceType: ultraDevice.deviceType,
+                    position: ultraDevice.position,
+                    zoomFactor: 1.0,
+                    sortOrder: 50
+                )
             )
-        case (.back, .builtInWideAngleCamera):
-            return LensOption(
-                id: device.uniqueID,
-                displayName: "Wide",
-                shortName: "Wide",
-                deviceType: device.deviceType,
-                position: device.position,
-                sortOrder: 1
+        }
+
+        if let wideDevice {
+            options.append(
+                LensOption(
+                    id: "\(wideDevice.uniqueID)-1x",
+                    deviceUniqueID: wideDevice.uniqueID,
+                    displayName: "Wide",
+                    shortName: "Wide",
+                    selectorTitle: displayZoomFactorLabel(for: wideDevice, zoomFactor: 1.0),
+                    deviceType: wideDevice.deviceType,
+                    position: wideDevice.position,
+                    zoomFactor: 1.0,
+                    sortOrder: 100
+                )
             )
-        case (.back, .builtInTelephotoCamera):
-            return LensOption(
-                id: device.uniqueID,
-                displayName: "Tele",
-                shortName: "Tele",
-                deviceType: device.deviceType,
-                position: device.position,
-                sortOrder: 2
+
+            if wideDevice.activeFormat.videoMaxZoomFactor >= 2.0 {
+                options.append(
+                    LensOption(
+                        id: "\(wideDevice.uniqueID)-2x-crop",
+                        deviceUniqueID: wideDevice.uniqueID,
+                        displayName: "2x Crop",
+                        shortName: "2x Crop",
+                        selectorTitle: displayZoomFactorLabel(for: wideDevice, zoomFactor: 2.0),
+                        deviceType: wideDevice.deviceType,
+                        position: wideDevice.position,
+                        zoomFactor: 2.0,
+                        sortOrder: 200
+                    )
+                )
+            }
+        }
+
+        if let teleDevice {
+            let teleScale = teleDisplayZoomFactor(for: teleDevice, relativeTo: wideDevice)
+            options.append(
+                LensOption(
+                    id: "\(teleDevice.uniqueID)-\(teleScale)x",
+                    deviceUniqueID: teleDevice.uniqueID,
+                    displayName: "\(teleScale)x Tele",
+                    shortName: "\(teleScale)x",
+                    selectorTitle: "\(teleScale)",
+                    deviceType: teleDevice.deviceType,
+                    position: teleDevice.position,
+                    zoomFactor: 1.0,
+                    sortOrder: teleScale * 100
+                )
             )
-        case (.front, .builtInTrueDepthCamera), (.front, .builtInWideAngleCamera):
-            return LensOption(
-                id: device.uniqueID,
-                displayName: "Front",
-                shortName: "Front",
-                deviceType: device.deviceType,
-                position: device.position,
-                sortOrder: 10
+        }
+
+        if options.isEmpty, let fallbackDevice = wideDevice ?? devices.first(where: { $0.position == .back }) ?? devices.first {
+            options.append(
+                LensOption(
+                    id: "\(fallbackDevice.uniqueID)-1x",
+                    deviceUniqueID: fallbackDevice.uniqueID,
+                    displayName: "Wide",
+                    shortName: "Wide",
+                    selectorTitle: displayZoomFactorLabel(for: fallbackDevice, zoomFactor: 1.0),
+                    deviceType: fallbackDevice.deviceType,
+                    position: fallbackDevice.position,
+                    zoomFactor: 1.0,
+                    sortOrder: 100
+                )
             )
-        case (.back, .builtInDualWideCamera):
-            return LensOption(
-                id: device.uniqueID,
-                displayName: "Wide",
-                shortName: "Wide",
-                deviceType: device.deviceType,
-                position: device.position,
-                sortOrder: 3
-            )
-        case (.back, .builtInDualCamera):
-            return LensOption(
-                id: device.uniqueID,
-                displayName: "Wide",
-                shortName: "Wide",
-                deviceType: device.deviceType,
-                position: device.position,
-                sortOrder: 4
-            )
-        case (.back, .builtInTripleCamera):
-            return LensOption(
-                id: device.uniqueID,
-                displayName: "Wide",
-                shortName: "Wide",
-                deviceType: device.deviceType,
-                position: device.position,
-                sortOrder: 5
-            )
-        default:
-            return nil
+        }
+
+        return options.sorted { lhs, rhs in
+            if lhs.sortOrder == rhs.sortOrder {
+                return lhs.selectorTitle < rhs.selectorTitle
+            }
+            return lhs.sortOrder < rhs.sortOrder
         }
     }
 
+    private func teleDisplayZoomFactor(for teleDevice: AVCaptureDevice, relativeTo wideDevice: AVCaptureDevice?) -> Int {
+        if #available(iOS 18.0, *) {
+            let multiplier = teleDevice.displayVideoZoomFactorMultiplier
+            if multiplier.isFinite, multiplier >= 2.5 {
+                return min(max(Int(multiplier.rounded()), 3), 9)
+            }
+        }
+
+        guard let wideDevice else { return 5 }
+        let wideFOV = Double(wideDevice.activeFormat.videoFieldOfView)
+        let teleFOV = Double(teleDevice.activeFormat.videoFieldOfView)
+        guard wideFOV > 0, teleFOV > 0 else { return 5 }
+        let ratio = wideFOV / teleFOV
+        return min(max(Int(ratio.rounded()), 3), 5)
+    }
+
+    private func displayZoomFactorLabel(for device: AVCaptureDevice, zoomFactor: CGFloat) -> String {
+        let baseMultiplier: CGFloat
+        if #available(iOS 18.0, *) {
+            let multiplier = device.displayVideoZoomFactorMultiplier
+            baseMultiplier = multiplier.isFinite && multiplier > 0 ? multiplier : 1.0
+        } else {
+            baseMultiplier = 1.0
+        }
+
+        let displayValue = baseMultiplier * zoomFactor
+        if abs(displayValue - displayValue.rounded()) < 0.05 {
+            return String(Int(displayValue.rounded()))
+        }
+        return String(format: "%.1f", displayValue)
+    }
+
     private static func defaultLensOption(from options: [LensOption]) -> LensOption? {
-        options.first(where: { $0.deviceType == .builtInWideAngleCamera && $0.position == .back }) ??
+        options.first(where: { $0.deviceType == .builtInWideAngleCamera && $0.position == .back && abs($0.zoomFactor - 1.0) < 0.01 }) ??
         options.first(where: { $0.position == .back }) ??
         options.first
     }
@@ -1009,7 +1240,6 @@ final class CameraManager: NSObject, ObservableObject {
             videoInput = input
             DispatchQueue.main.async {
                 self.activeDevice = device
-                self.activeLensID = device.uniqueID
                 self.supportsManualFocus = device.isLockingFocusWithCustomLensPositionSupported
                 self.manualFocusPosition = device.lensPosition
                 if !device.isLockingFocusWithCustomLensPositionSupported {
@@ -1034,6 +1264,12 @@ final class CameraManager: NSObject, ObservableObject {
         } catch {
             presentStatusMessage("Audio input unavailable.")
         }
+    }
+
+    private func installPhotoOutputIfPossible() {
+        guard session.canAddOutput(photoOutput) else { return }
+        session.addOutput(photoOutput)
+        photoOutput.maxPhotoQualityPrioritization = .quality
     }
 
     private func installDataOutputsIfPossible() {
@@ -1076,16 +1312,56 @@ final class CameraManager: NSObject, ObservableObject {
     private func reconfigureActiveLens() {
         sessionQueue.async {
             self.session.beginConfiguration()
-            self.configureDeviceForCurrentSelection()
+            self.configureDeviceForCurrentSelection(inConfiguration: true)
             self.session.commitConfiguration()
             self.configureOutput()
         }
     }
 
-    private func configureDeviceForCurrentSelection() {
+    private func configureDeviceForCurrentSelection(mode: CaptureMode? = nil,
+                                                    inConfiguration: Bool = false,
+                                                    preferredLens: LensOption? = nil) {
         guard let device = videoInput?.device ?? activeDevice else { return }
+        let targetMode = mode ?? captureMode
+        let resolvedLens = resolvedLensOption(for: device, preferredLens: preferredLens)
+        let targetZoomFactor = resolvedLens?.zoomFactor ?? 1.0
 
         do {
+            if targetMode == .photo {
+                guard let photoFormat = selectBestPhotoFormat(for: device) else {
+                    throw CameraConfigurationError(message: "Selected lens does not support ProRAW capture.")
+                }
+
+                try device.lockForConfiguration()
+                device.activeFormat = photoFormat
+                device.activeVideoMinFrameDuration = .invalid
+                device.activeVideoMaxFrameDuration = .invalid
+                if device.isFocusModeSupported(.continuousAutoFocus) && !manualFocusEnabled {
+                    device.focusMode = .continuousAutoFocus
+                }
+                applyWhiteBalanceState(on: device)
+                applyExposureConfiguration(on: device)
+                if manualFocusEnabled && device.isLockingFocusWithCustomLensPositionSupported {
+                    device.setFocusModeLocked(lensPosition: manualFocusPosition, completionHandler: nil)
+                }
+                device.videoZoomFactor = min(targetZoomFactor, device.activeFormat.videoMaxZoomFactor)
+                device.unlockForConfiguration()
+
+                updatePhotoOutputConfiguration(for: device, inConfiguration: inConfiguration)
+                updateSupportedStabilizationModes(for: device.activeFormat)
+
+                DispatchQueue.main.async {
+                    self.activeDevice = device
+                    self.activeLensID = resolvedLens?.id
+                    self.supportsManualFocus = device.isLockingFocusWithCustomLensPositionSupported
+                    self.colorProfile = .unavailable
+                    self.canRecord = false
+                    self.manualISO = self.clampedISO(self.manualISO, for: device)
+                    self.manualShutterSpeedDenominator = self.nearestShutterSpeedDenominator(to: self.manualShutterSpeedDenominator)
+                }
+                return
+            }
+
             let selection = try selectBestFormat(for: device, targetFrameRate: selectedFrameRate)
 
             try device.lockForConfiguration()
@@ -1104,14 +1380,16 @@ final class CameraManager: NSObject, ObservableObject {
             if manualFocusEnabled && device.isLockingFocusWithCustomLensPositionSupported {
                 device.setFocusModeLocked(lensPosition: manualFocusPosition, completionHandler: nil)
             }
+            device.videoZoomFactor = min(targetZoomFactor, device.activeFormat.videoMaxZoomFactor)
             device.unlockForConfiguration()
 
+            updatePhotoOutputConfiguration(for: device, inConfiguration: inConfiguration)
             updateSupportedStabilizationModes(for: selection.format)
             updateProExposureAutomationState()
 
             DispatchQueue.main.async {
                 self.activeDevice = device
-                self.activeLensID = device.uniqueID
+                self.activeLensID = resolvedLens?.id
                 self.supportsManualFocus = device.isLockingFocusWithCustomLensPositionSupported
                 self.colorProfile = selection.profile
                 self.canRecord = true
@@ -1122,14 +1400,111 @@ final class CameraManager: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 self.colorProfile = .unavailable
                 self.canRecord = false
+                self.canCapturePhoto = false
+                self.appleProRAWEnabled = false
             }
             presentStatusMessage(error.message)
         } catch {
             DispatchQueue.main.async {
                 self.colorProfile = .unavailable
                 self.canRecord = false
+                self.canCapturePhoto = false
+                self.appleProRAWEnabled = false
             }
             presentStatusMessage("Camera configuration failed.")
+        }
+    }
+
+    private func resolvedLensOption(for device: AVCaptureDevice, preferredLens: LensOption? = nil) -> LensOption? {
+        if let preferredLens, preferredLens.deviceUniqueID == device.uniqueID {
+            return preferredLens
+        }
+
+        if let activeLensID,
+           let activeLens = lensOptions.first(where: { $0.id == activeLensID && $0.deviceUniqueID == device.uniqueID }) {
+            return activeLens
+        }
+
+        return Self.defaultLensOption(from: lensOptions.filter { $0.deviceUniqueID == device.uniqueID })
+    }
+
+    private func selectBestPhotoFormat(for device: AVCaptureDevice) -> AVCaptureDevice.Format? {
+        device.formats
+            .filter { !$0.supportedMaxPhotoDimensions.isEmpty }
+            .sorted { lhs, rhs in
+                if lhs.isHighestPhotoQualitySupported != rhs.isHighestPhotoQualitySupported {
+                    return lhs.isHighestPhotoQualitySupported && !rhs.isHighestPhotoQualitySupported
+                }
+
+                if lhs.isHighPhotoQualitySupported != rhs.isHighPhotoQualitySupported {
+                    return lhs.isHighPhotoQualitySupported && !rhs.isHighPhotoQualitySupported
+                }
+
+                let lhsPhotoPixels = maximumPhotoPixelCount(for: lhs)
+                let rhsPhotoPixels = maximumPhotoPixelCount(for: rhs)
+                if lhsPhotoPixels != rhsPhotoPixels {
+                    return lhsPhotoPixels > rhsPhotoPixels
+                }
+
+                let lhsVideoDimensions = CMVideoFormatDescriptionGetDimensions(lhs.formatDescription)
+                let rhsVideoDimensions = CMVideoFormatDescriptionGetDimensions(rhs.formatDescription)
+                let lhsVideoPixels = Int64(lhsVideoDimensions.width) * Int64(lhsVideoDimensions.height)
+                let rhsVideoPixels = Int64(rhsVideoDimensions.width) * Int64(rhsVideoDimensions.height)
+                return lhsVideoPixels > rhsVideoPixels
+            }
+            .first
+    }
+
+    private func maximumPhotoPixelCount(for format: AVCaptureDevice.Format) -> Int64 {
+        format.supportedMaxPhotoDimensions.reduce(into: Int64.zero) { best, dimensions in
+            let pixelCount = Int64(dimensions.width) * Int64(dimensions.height)
+            if pixelCount > best {
+                best = pixelCount
+            }
+        }
+    }
+
+    private func updatePhotoOutputConfiguration(for device: AVCaptureDevice, inConfiguration: Bool) {
+        if let dimensions = preferredPhotoDimensions(for: device) {
+            let current = photoOutput.maxPhotoDimensions
+            if current.width != dimensions.width || current.height != dimensions.height {
+                photoOutput.maxPhotoDimensions = dimensions
+            }
+        }
+
+        guard #available(iOS 14.3, *) else {
+            DispatchQueue.main.async {
+                self.appleProRAWSupported = false
+                self.appleProRAWEnabled = false
+                self.canCapturePhoto = false
+            }
+            return
+        }
+
+        let supported = photoOutput.isAppleProRAWSupported
+        if photoOutput.isAppleProRAWEnabled != supported {
+            if inConfiguration {
+                photoOutput.isAppleProRAWEnabled = supported
+            } else {
+                session.beginConfiguration()
+                photoOutput.isAppleProRAWEnabled = supported
+                session.commitConfiguration()
+            }
+        }
+
+        let enabled = supported && preferredAppleProRAWPixelFormatForCapture() != nil
+        DispatchQueue.main.async {
+            self.appleProRAWSupported = supported
+            self.appleProRAWEnabled = enabled
+            self.canCapturePhoto = enabled
+        }
+    }
+
+    private func preferredPhotoDimensions(for device: AVCaptureDevice) -> CMVideoDimensions? {
+        let valid = device.activeFormat.supportedMaxPhotoDimensions.filter { $0.width > 0 && $0.height > 0 }
+        guard !valid.isEmpty else { return nil }
+        return valid.max { lhs, rhs in
+            Int64(lhs.width) * Int64(lhs.height) < Int64(rhs.width) * Int64(rhs.height)
         }
     }
 
@@ -1207,14 +1582,15 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func configureOutput() {
+    private func configureOutput(mode: CaptureMode? = nil) {
+        let targetMode = mode ?? captureMode
         if let connection = videoDataOutput.connection(with: .video) {
             applyPreviewConnectionConfiguration(connection)
             observeActiveStabilizationMode(on: connection)
             refreshActiveStabilizationMode(from: connection)
         }
         DispatchQueue.main.async {
-            self.canRecord = self.colorProfile != .unavailable
+            self.canRecord = targetMode == .video && self.colorProfile != .unavailable
         }
     }
 
@@ -1686,6 +2062,11 @@ final class CameraManager: NSObject, ObservableObject {
     private func restorePersistedSettings() {
         let defaults = UserDefaults.standard
 
+        if let rawCaptureMode = defaults.string(forKey: SettingsKey.captureMode),
+           let persistedCaptureMode = CaptureMode(rawValue: rawCaptureMode) {
+            captureMode = persistedCaptureMode
+        }
+
         if let savedFrameRate = defaults.object(forKey: SettingsKey.selectedFrameRate) as? Int,
            Self.supportedFrameRates.contains(savedFrameRate) {
             selectedFrameRate = savedFrameRate
@@ -1863,6 +2244,10 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func applyCaptureRotation(_ angle: CGFloat) {
         currentCaptureRotationAngle = angle
+        if let connection = photoOutput.connection(with: .video),
+           connection.isVideoRotationAngleSupported(angle) {
+            connection.videoRotationAngle = angle
+        }
     }
 
     private func captureTransform(for angle: CGFloat, sourceDimensions: CMVideoDimensions) -> CGAffineTransform {
@@ -1997,6 +2382,79 @@ extension CameraManager {
                     self.presentStatusMessage("Saved to Photos.")
                 }
             }
+        }
+    }
+
+    fileprivate func saveRawPhotoToPhotoLibrary(_ rawData: Data) {
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            guard status == .authorized || status == .limited else {
+                self.presentStatusMessage("RAW photo was captured but Photos access is not allowed.")
+                return
+            }
+
+            let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("dng")
+
+            do {
+                try rawData.write(to: tempURL, options: .atomic)
+            } catch {
+                self.presentStatusMessage("Could not prepare RAW photo for saving.")
+                return
+            }
+
+            PHPhotoLibrary.shared().performChanges({
+                let request = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.shouldMoveFile = true
+                request.addResource(with: .photo, fileURL: tempURL, options: options)
+            }, completionHandler: { success, error in
+                if !success {
+                    try? FileManager.default.removeItem(at: tempURL)
+                }
+
+                if let error {
+                    self.presentStatusMessage("Could not save RAW photo: \(error.localizedDescription)")
+                    return
+                }
+
+                if success {
+                    self.presentStatusMessage("RAW photo saved to Photos.")
+                }
+            })
+        }
+    }
+}
+
+private final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
+    private let completion: (Data?) -> Void
+    private let stateQueue = DispatchQueue(label: "com.logcamera.photoCaptureProcessor")
+    private var rawPhotoData: Data?
+
+    init(completion: @escaping (Data?) -> Void) {
+        self.completion = completion
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput,
+                     didFinishProcessingPhoto photo: AVCapturePhoto,
+                     error: Error?) {
+        guard error == nil,
+              photo.isRawPhoto,
+              let data = photo.fileDataRepresentation() else { return }
+        stateQueue.sync {
+            rawPhotoData = data
+        }
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput,
+                     didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
+                     error: Error?) {
+        if let error {
+            print("PhotoCaptureProcessor capture error: \(error)")
+        }
+        let data = stateQueue.sync { rawPhotoData }
+        DispatchQueue.main.async {
+            self.completion(data)
         }
     }
 }
