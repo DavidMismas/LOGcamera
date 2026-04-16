@@ -123,10 +123,17 @@ struct ContentView: View {
 }
 
 private struct CameraScreen: View {
+    private enum PhotoProAdjustment: String {
+        case shutterSpeed
+        case iso
+        case whiteBalance
+    }
+
     @ObservedObject var cameraManager: CameraManager
     @State private var showsControlMenu = false
     @State private var showsExposurePanel = false
     @State private var showsWhiteBalancePanel = false
+    @State private var activePhotoProAdjustment: PhotoProAdjustment?
     @State private var previewControlRotationDegrees: Double = 0
 
     var body: some View {
@@ -143,7 +150,7 @@ private struct CameraScreen: View {
 
             VStack(spacing: 0) {
                 topControlStrip
-                    .offset(y: -3)
+                    .offset(y: 3)
                 if cameraManager.captureMode == .photo {
                     Spacer(minLength: 0)
                     previewSurface
@@ -173,14 +180,51 @@ private struct CameraScreen: View {
         .onChange(of: cameraManager.captureMode) { _, _ in
             showsExposurePanel = false
             showsWhiteBalancePanel = false
+            activePhotoProAdjustment = nil
+        }
+        .onChange(of: cameraManager.photoProExposureEnabled) { _, isEnabled in
+            if !isEnabled {
+                activePhotoProAdjustment = nil
+            }
         }
     }
 
     private var topControlStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(alignment: .bottom, spacing: 8) {
                 if cameraManager.captureMode == .photo {
-                    compactReadOnlyChip(title: cameraManager.appleProRAWEnabled ? "ProRAW DNG" : "RAW Off")
+                    compactControlChip(title: "PRO", isSelected: cameraManager.photoProExposureEnabled) {
+                        cameraManager.setProExposureEnabled(!cameraManager.photoProExposureEnabled)
+                    }
+
+                    if cameraManager.photoProExposureEnabled {
+                        compactActionChip(
+                            title: "S \(cameraManager.currentShutterSpeedLabel)",
+                            isSelected: activePhotoProAdjustment == .shutterSpeed
+                        ) {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                activePhotoProAdjustment = activePhotoProAdjustment == .shutterSpeed ? nil : .shutterSpeed
+                            }
+                        }
+
+                        compactActionChip(
+                            title: "ISO \(cameraManager.currentISOValueLabel)",
+                            isSelected: activePhotoProAdjustment == .iso
+                        ) {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                activePhotoProAdjustment = activePhotoProAdjustment == .iso ? nil : .iso
+                            }
+                        }
+
+                        compactActionChip(
+                            title: "WB \(photoWhiteBalanceChipLabel)",
+                            isSelected: activePhotoProAdjustment == .whiteBalance
+                        ) {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                activePhotoProAdjustment = activePhotoProAdjustment == .whiteBalance ? nil : .whiteBalance
+                            }
+                        }
+                    }
                 } else {
                     compactToggleChip(title: "PRO", isSelected: cameraManager.proExposureEnabled) {
                         withAnimation(.easeOut(duration: 0.18)) {
@@ -260,6 +304,17 @@ private struct CameraScreen: View {
                         .padding(.top, 18)
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                if cameraManager.captureMode == .photo,
+                   !isLandscapePreviewOrientation,
+                   let activePhotoProAdjustment,
+                   cameraManager.photoProExposureEnabled {
+                    photoProAdjustmentPanel(for: activePhotoProAdjustment)
+                        .padding(.top, 76)
+                        .padding(.trailing, 14)
+                        .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .topTrailing)))
+                }
+            }
             .overlay(alignment: .bottom) {
                 Group {
                     if cameraManager.captureMode == .photo {
@@ -332,8 +387,8 @@ private struct CameraScreen: View {
     }
 
     private var photoPreviewOverlay: some View {
-        VStack(spacing: 10) {
-            if let statusMessage = cameraManager.statusMessage {
+        VStack(spacing: isLandscapePreviewOrientation ? 5 : 10) {
+            if let statusMessage = photoPreviewStatusMessage {
                 Text(statusMessage)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(AppTheme.textPrimary)
@@ -342,10 +397,26 @@ private struct CameraScreen: View {
                     .metalRoundedPanel(cornerRadius: 16)
             }
 
+            if isLandscapePreviewOrientation,
+               let activePhotoProAdjustment,
+               cameraManager.photoProExposureEnabled {
+                HStack {
+                    Spacer(minLength: 0)
+                    photoLandscapeAdjustmentPanel(for: activePhotoProAdjustment)
+                }
+                .frame(maxWidth: .infinity)
+                .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottomTrailing)))
+            }
+
             lensPickerStrip
                 .padding(.bottom, 2)
         }
         .frame(maxWidth: .infinity, minHeight: 72, alignment: .bottom)
+    }
+
+    private var photoPreviewStatusMessage: String? {
+        guard let statusMessage = cameraManager.statusMessage else { return nil }
+        return statusMessage.localizedCaseInsensitiveContains("stabilization") ? nil : statusMessage
     }
 
     private var photoBottomBar: some View {
@@ -360,6 +431,90 @@ private struct CameraScreen: View {
             recordButton
         }
         .frame(maxWidth: .infinity, minHeight: 118, alignment: .center)
+    }
+
+    @ViewBuilder
+    private func photoProAdjustmentPanel(for adjustment: PhotoProAdjustment) -> some View {
+        let title = photoAdjustmentTitle(for: adjustment)
+        let valueLabel = photoAdjustmentValueLabel(for: adjustment)
+        let sliderBinding = photoSliderBinding(for: adjustment)
+        let sliderRange = 0...Double(max(photoAdjustmentStepCount(for: adjustment) - 1, 0))
+
+        VStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .tracking(0.5)
+                .foregroundStyle(AppTheme.textSecondary)
+
+            Text(valueLabel)
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.textPrimary)
+
+            DiscreteLandscapeSlider(
+                value: sliderBinding,
+                range: sliderRange,
+                step: 1
+            )
+            .frame(width: 272)
+            .rotationEffect(.degrees(-90))
+            .frame(width: 34, height: 272)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 14)
+        .frame(width: 60)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.surfaceRaised.opacity(0.36))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
+        )
+        .rotationEffect(.degrees(previewControlRotationDegrees))
+    }
+
+    private func photoLandscapeAdjustmentPanel(for adjustment: PhotoProAdjustment) -> some View {
+        let title = photoAdjustmentTitle(for: adjustment)
+        let valueLabel = photoAdjustmentValueLabel(for: adjustment)
+        let sliderBinding = photoSliderBinding(for: adjustment)
+        let sliderRange = 0...Double(max(photoAdjustmentStepCount(for: adjustment) - 1, 0))
+
+        return HStack(spacing: 10) {
+            DiscreteLandscapeSlider(
+                value: sliderBinding,
+                range: sliderRange,
+                step: 1
+            )
+            .frame(maxWidth: .infinity)
+
+            VStack(alignment: .center, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 10, weight: .black, design: .monospaced))
+                    .tracking(0.4)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .lineLimit(1)
+                    .fixedSize()
+
+                Text(valueLabel)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .rotationEffect(.degrees(previewControlRotationDegrees))
+            .frame(width: 56, height: 116)
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity)
+        .frame(height: 60)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(AppTheme.surfaceRaised.opacity(0.36))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
+        )
     }
 
     private var quickAdjustments: some View {
@@ -481,21 +636,21 @@ private struct CameraScreen: View {
 
     private var lensPickerStrip: some View {
         HStack(spacing: 8) {
-            ForEach(cameraManager.availableLenses) { lens in
+            ForEach(cameraManager.lensPickerOptions) { lens in
                 Button {
-                    cameraManager.switchLens(to: lens.id)
+                    cameraManager.handleLensPickerTap(selectorID: lens.selectorID)
                 } label: {
-                    Text(lens.selectorTitle)
+                    Text(cameraManager.lensPickerTitle(for: lens))
                         .font(.system(size: 13, weight: .black, design: .monospaced))
-                        .foregroundStyle(cameraManager.activeLensID == lens.id ? Color.black : AppTheme.textPrimary)
+                        .foregroundStyle(cameraManager.activeLensSelectorID == lens.selectorID ? Color.black : AppTheme.textPrimary)
                         .frame(width: 34, height: 34)
                         .background(
                             Circle()
-                                .fill(cameraManager.activeLensID == lens.id ? AppTheme.accent : Color.black.opacity(0.60))
+                                .fill(cameraManager.activeLensSelectorID == lens.selectorID ? AppTheme.accent : Color.black.opacity(0.60))
                         )
                         .overlay(
                             Circle()
-                                .stroke(cameraManager.activeLensID == lens.id ? Color.white.opacity(0.18) : AppTheme.border, lineWidth: 1)
+                                .stroke(cameraManager.activeLensSelectorID == lens.selectorID ? Color.white.opacity(0.18) : AppTheme.border, lineWidth: 1)
                         )
                         .rotationEffect(.degrees(previewControlRotationDegrees))
                 }
@@ -604,6 +759,134 @@ private struct CameraScreen: View {
         abs(previewControlRotationDegrees) == 90
     }
 
+    private var photoShutterSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(photoCurrentShutterIndex)
+            },
+            set: { newValue in
+                let index = photoClampedIndex(for: newValue, count: cameraManager.availableShutterSpeedDenominators.count)
+                guard cameraManager.availableShutterSpeedDenominators.indices.contains(index) else { return }
+                cameraManager.setManualShutterSpeedDenominator(
+                    cameraManager.availableShutterSpeedDenominators[index]
+                )
+            }
+        )
+    }
+
+    private var photoISOSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(photoCurrentISOIndex)
+            },
+            set: { newValue in
+                let index = photoClampedIndex(for: newValue, count: cameraManager.availableISOValues.count)
+                guard cameraManager.availableISOValues.indices.contains(index) else { return }
+                cameraManager.setManualISO(cameraManager.availableISOValues[index])
+            }
+        )
+    }
+
+    private var photoWhiteBalanceSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(photoCurrentWhiteBalanceIndex)
+            },
+            set: { newValue in
+                let values = photoWhiteBalanceValues
+                let index = photoClampedIndex(for: newValue, count: values.count)
+                guard values.indices.contains(index) else { return }
+                cameraManager.setWhiteBalanceTemperature(values[index])
+            }
+        )
+    }
+
+    private var photoCurrentShutterIndex: Int {
+        let values = cameraManager.availableShutterSpeedDenominators
+        return values.firstIndex(of: cameraManager.currentShutterSpeedDenominator) ?? 0
+    }
+
+    private var photoCurrentISOIndex: Int {
+        let values = cameraManager.availableISOValues
+        guard !values.isEmpty else { return 0 }
+
+        let currentISO = Float(cameraManager.currentISOValueLabel) ?? values[0]
+        return values.enumerated().min { lhs, rhs in
+            abs(lhs.element - currentISO) < abs(rhs.element - currentISO)
+        }?.offset ?? 0
+    }
+
+    private var photoCurrentWhiteBalanceIndex: Int {
+        let values = photoWhiteBalanceValues
+        guard !values.isEmpty else { return 0 }
+
+        let currentTemperature = cameraManager.whiteBalanceTemperature
+        return values.enumerated().min { lhs, rhs in
+            abs(lhs.element - currentTemperature) < abs(rhs.element - currentTemperature)
+        }?.offset ?? 0
+    }
+
+    private func photoAdjustmentStepCount(for adjustment: PhotoProAdjustment) -> Int {
+        switch adjustment {
+        case .shutterSpeed:
+            return cameraManager.availableShutterSpeedDenominators.count
+        case .iso:
+            return cameraManager.availableISOValues.count
+        case .whiteBalance:
+            return photoWhiteBalanceValues.count
+        }
+    }
+
+    private func photoAdjustmentTitle(for adjustment: PhotoProAdjustment) -> String {
+        switch adjustment {
+        case .shutterSpeed:
+            return "SS"
+        case .iso:
+            return "ISO"
+        case .whiteBalance:
+            return "WB"
+        }
+    }
+
+    private func photoAdjustmentValueLabel(for adjustment: PhotoProAdjustment) -> String {
+        switch adjustment {
+        case .shutterSpeed:
+            return cameraManager.currentShutterSpeedLabel
+        case .iso:
+            return cameraManager.currentISOValueLabel
+        case .whiteBalance:
+            return photoWhiteBalanceChipLabel
+        }
+    }
+
+    private func photoSliderBinding(for adjustment: PhotoProAdjustment) -> Binding<Double> {
+        switch adjustment {
+        case .shutterSpeed:
+            return photoShutterSliderBinding
+        case .iso:
+            return photoISOSliderBinding
+        case .whiteBalance:
+            return photoWhiteBalanceSliderBinding
+        }
+    }
+
+    private var photoWhiteBalanceValues: [Double] {
+        let range = cameraManager.whiteBalanceTemperatureRange
+        let lowerBound = Int(range.lowerBound.rounded())
+        let upperBound = Int(range.upperBound.rounded())
+        return Array(stride(from: lowerBound, through: upperBound, by: 100)).map(Double.init)
+    }
+
+    private var photoWhiteBalanceChipLabel: String {
+        let value = Int(cameraManager.whiteBalanceTemperature.rounded())
+        return "\(value)K"
+    }
+
+    private func photoClampedIndex(for value: Double, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        return min(max(Int(value.rounded()), 0), count - 1)
+    }
+
     private var captureModeSwitchButtonOffset: CGFloat {
         -132
     }
@@ -686,6 +969,18 @@ private struct CameraScreen: View {
         .metalCapsulePanel()
     }
 
+    private func compactActionChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .metalCapsulePanel(isActive: isSelected)
+        }
+        .buttonStyle(.plain)
+    }
+
     private func compactReadOnlyChip(title: String) -> some View {
         Text(title)
             .font(.system(size: 11, weight: .bold, design: .monospaced))
@@ -693,6 +988,23 @@ private struct CameraScreen: View {
             .padding(.horizontal, 10)
             .frame(height: 28)
             .metalCapsulePanel()
+    }
+
+    private func compactControlChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 9, weight: .black))
+                Text(title)
+                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .tracking(0.4)
+            }
+            .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .metalCapsulePanel(isActive: isSelected)
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -715,14 +1027,9 @@ private struct CameraSettingsView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
                     header
-                    previewSection
-                    sectionHeader("Photo")
+                    appSection
                     photoSection
-                    sectionHeader("Video")
-                    frameRateSection
-                    stabilizationSection
-                    lockSection
-                    bitrateSection
+                    videoSection
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
@@ -756,132 +1063,246 @@ private struct CameraSettingsView: View {
         .padding(.top, 10)
     }
 
-    private var previewSection: some View {
-        settingsCard(title: "Preview") {
-            HStack(spacing: 8) {
-                ForEach(PreviewLookMode.allCases) { mode in
-                    selectionButton(
-                        title: mode.title,
-                        isSelected: cameraManager.previewLookMode == mode
-                    ) {
-                        cameraManager.selectPreviewLookMode(mode)
+    private var appSection: some View {
+        settingsCard(title: "App") {
+            VStack(alignment: .leading, spacing: 12) {
+                subsectionLabel("Default Mode")
+                HStack(spacing: 8) {
+                    ForEach(CaptureMode.allCases) { mode in
+                        selectionButton(
+                            title: mode.title,
+                            isSelected: cameraManager.defaultCaptureMode == mode
+                        ) {
+                            cameraManager.selectDefaultCaptureMode(mode)
+                        }
                     }
                 }
-            }
-        }
-    }
 
-    private var frameRateSection: some View {
-        settingsCard(title: "Frame Rate") {
-            HStack(spacing: 8) {
-                ForEach(CameraManager.supportedFrameRates, id: \.self) { fps in
-                    frameRateButton(
-                        fps: fps,
-                        isSelected: cameraManager.selectedFrameRate == fps
-                    ) {
-                        cameraManager.selectFrameRate(fps)
-                    }
-                    .disabled(cameraManager.isRecording)
-                }
-            }
-        }
-    }
-
-    private var photoSection: some View {
-        settingsCard(title: "Capture") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Format")
-                        .foregroundStyle(.white.opacity(0.7))
-                    Spacer()
-                    Text(cameraManager.appleProRAWEnabled ? "ProRAW DNG" : "Unavailable")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(cameraManager.appleProRAWEnabled ? AppTheme.accent : .white.opacity(0.7))
-                }
-                .font(.system(size: 13, weight: .medium))
-
-                Text("Photo mode currently saves RAW DNG to Photos.")
+                Text("This mode opens when the app launches.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(AppTheme.textSecondary)
             }
         }
     }
 
-    private var stabilizationSection: some View {
-        settingsCard(title: "Stabilization") {
-            VStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    ForEach(CaptureStabilizationMode.allCases) { mode in
-                        selectionButton(
-                            title: mode.title,
-                            isSelected: cameraManager.selectedStabilizationMode == mode
-                        ) {
-                            cameraManager.selectStabilizationMode(mode)
-                        }
-                        .disabled(!cameraManager.supportedStabilizationModes.contains(mode))
-                        .opacity(cameraManager.supportedStabilizationModes.contains(mode) ? 1 : 0.45)
-                    }
-                }
-
-                HStack {
-                    Text("Active")
-                        .foregroundStyle(.white.opacity(0.7))
-                    Spacer()
-                    Text(cameraManager.activeStabilizationTitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(cameraManager.activeStabilizationMode == .off ? .white.opacity(0.7) : AppTheme.accent)
-                }
-                .font(.system(size: 13, weight: .medium))
-            }
-        }
-    }
-
-    private var lockSection: some View {
-        settingsCard(title: "Locks") {
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    lockChip(
-                        title: "WB Lock REC",
-                        isOn: cameraManager.whiteBalanceLockedDuringRecording
-                    ) {
-                        cameraManager.whiteBalanceLockedDuringRecording.toggle()
-                    }
-
-                    lockChip(
-                        title: "AE Lock REC",
-                        isOn: cameraManager.exposureLockedDuringRecording
-                    ) {
-                        cameraManager.exposureLockedDuringRecording.toggle()
-                    }
+    private var previewOptions: some View {
+        HStack(spacing: 8) {
+            ForEach(PreviewLookMode.allCases) { mode in
+                selectionButton(
+                    title: mode.title,
+                    isSelected: cameraManager.previewLookMode == mode
+                ) {
+                    cameraManager.selectPreviewLookMode(mode)
                 }
             }
         }
     }
 
-    private var bitrateSection: some View {
-        settingsCard(title: "Bitrate") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    ForEach(CameraManager.supportedBitratesMbps, id: \.self) { bitrate in
-                        selectionButton(
-                            title: String(format: "%.0f Mb/s", bitrate),
-                            isSelected: cameraManager.recordingBitrateMbps == bitrate
-                        ) {
-                            cameraManager.setRecordingBitrateMbps(bitrate)
-                        }
+    private var frameRateOptions: some View {
+        HStack(spacing: 8) {
+            ForEach(CameraManager.supportedFrameRates, id: \.self) { fps in
+                frameRateButton(
+                    fps: fps,
+                    isSelected: cameraManager.selectedFrameRate == fps
+                ) {
+                    cameraManager.selectFrameRate(fps)
+                }
+                .disabled(cameraManager.isRecording)
+            }
+        }
+    }
+
+    private var photoSection: some View {
+        settingsCard(title: "Photo") {
+            VStack(alignment: .leading, spacing: 16) {
+                subsectionLabel("Format")
+                photoCaptureOptions
+
+                subsectionLabel("Resolution")
+                photoResolutionOptions
+            }
+        }
+    }
+
+    private var photoCaptureOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Format")
+                    .foregroundStyle(.white.opacity(0.7))
+                Spacer()
+                Text(cameraManager.appleProRAWEnabled ? "ProRAW DNG" : "Unavailable")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(cameraManager.appleProRAWEnabled ? AppTheme.accent : .white.opacity(0.7))
+            }
+            .font(.system(size: 13, weight: .medium))
+
+            HStack(spacing: 8) {
+                ForEach(PhotoCompanionFormat.allCases) { format in
+                    selectionButton(
+                        title: format.title,
+                        isSelected: cameraManager.photoCompanionFormat == format
+                    ) {
+                        cameraManager.selectPhotoCompanionFormat(format)
                     }
                 }
+            }
 
-                HStack {
-                    Button(cameraManager.usesCustomBitrate ? "Auto" : "Default") {
-                        cameraManager.resetRecordingBitrateToDefault()
+            Text("HEIC/JPEG is saved as a separate file next to the DNG.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(AppTheme.textSecondary)
+        }
+    }
+
+    private var photoResolutionOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ForEach(PhotoResolutionOption.allCases) { option in
+                    selectionButton(
+                        title: option.title,
+                        isSelected: cameraManager.photoResolutionOption == option
+                    ) {
+                        cameraManager.selectPhotoResolutionOption(option)
                     }
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(AppTheme.accent)
-                    .buttonStyle(.plain)
-
-                    Spacer()
                 }
+            }
+
+            Text("12 MP uses the closest supported 12-megapixel capture size.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(AppTheme.textSecondary)
+        }
+    }
+
+    private var videoSection: some View {
+        settingsCard(title: "Video") {
+            VStack(alignment: .leading, spacing: 16) {
+                subsectionLabel("Preview")
+                previewOptions
+
+                subsectionLabel("Frame Rate")
+                frameRateOptions
+
+                subsectionLabel("Codec")
+                videoCodecOptions
+
+                subsectionLabel("Bitrate")
+                bitrateOptions
+
+                subsectionLabel("Stabilization")
+                stabilizationOptions
+
+                subsectionLabel("Locks")
+                lockOptions
+            }
+        }
+    }
+
+    private var videoCodecOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ForEach(VideoRecordingCodec.allCases) { codec in
+                    selectionButton(
+                        title: codec.title,
+                        isSelected: cameraManager.selectedVideoCodec == codec
+                    ) {
+                        cameraManager.selectVideoCodec(codec)
+                    }
+                }
+            }
+
+            Text(cameraManager.allowsCustomBitrate
+                 ? "HEVC uses the bitrate setting below."
+                 : "ProRes records larger files and uses its own internal data rate.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(AppTheme.textSecondary)
+        }
+    }
+
+    private var stabilizationOptions: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("For video mode only.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppTheme.textSecondary)
+                Spacer()
+            }
+
+            HStack(spacing: 8) {
+                ForEach(CaptureStabilizationMode.allCases) { mode in
+                    selectionButton(
+                        title: mode.title,
+                        isSelected: cameraManager.selectedStabilizationMode == mode
+                    ) {
+                        cameraManager.selectStabilizationMode(mode)
+                    }
+                    .disabled(cameraManager.captureMode == .video && !cameraManager.supportedStabilizationModes.contains(mode))
+                    .opacity((cameraManager.captureMode == .photo || cameraManager.supportedStabilizationModes.contains(mode)) ? 1 : 0.45)
+                }
+            }
+
+            HStack {
+                Text("Active")
+                    .foregroundStyle(.white.opacity(0.7))
+                Spacer()
+                Text(cameraManager.activeStabilizationTitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(cameraManager.activeStabilizationMode == .off ? .white.opacity(0.7) : AppTheme.accent)
+            }
+            .font(.system(size: 13, weight: .medium))
+        }
+    }
+
+    private var lockOptions: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                lockChip(
+                    title: "WB Lock REC",
+                    isOn: cameraManager.whiteBalanceLockedDuringRecording
+                ) {
+                    cameraManager.whiteBalanceLockedDuringRecording.toggle()
+                }
+
+                lockChip(
+                    title: "AE Lock REC",
+                    isOn: cameraManager.exposureLockedDuringRecording
+                ) {
+                    cameraManager.exposureLockedDuringRecording.toggle()
+                }
+            }
+        }
+    }
+
+    private var bitrateOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ForEach(CameraManager.supportedBitratesMbps, id: \.self) { bitrate in
+                    selectionButton(
+                        title: String(format: "%.0f Mb/s", bitrate),
+                        isSelected: cameraManager.recordingBitrateMbps == bitrate
+                    ) {
+                        cameraManager.setRecordingBitrateMbps(bitrate)
+                    }
+                }
+            }
+            .disabled(!cameraManager.allowsCustomBitrate)
+            .opacity(cameraManager.allowsCustomBitrate ? 1 : 0.45)
+
+            HStack {
+                Button(cameraManager.usesCustomBitrate ? "Auto" : "Default") {
+                    cameraManager.resetRecordingBitrateToDefault()
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(AppTheme.accent)
+                .buttonStyle(.plain)
+
+                Spacer()
+            }
+            .disabled(!cameraManager.allowsCustomBitrate)
+            .opacity(cameraManager.allowsCustomBitrate ? 1 : 0.45)
+
+            if !cameraManager.allowsCustomBitrate {
+                Text("Selected codec manages bitrate internally.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppTheme.textSecondary)
             }
         }
     }
@@ -900,12 +1321,11 @@ private struct CameraSettingsView: View {
         .metalRoundedPanel(cornerRadius: 24)
     }
 
-    private func sectionHeader(_ title: String) -> some View {
+    private func subsectionLabel(_ title: String) -> some View {
         Text(title.uppercased())
-            .font(.system(size: 13, weight: .black, design: .monospaced))
-            .tracking(1.6)
+            .font(.system(size: 11, weight: .black, design: .monospaced))
+            .tracking(1.1)
             .foregroundStyle(AppTheme.textPrimary)
-            .padding(.top, 4)
     }
 
     private func selectionButton(title: String,
@@ -980,7 +1400,7 @@ private struct PermissionView: View {
                     .font(.system(size: 24, weight: .bold))
                     .multilineTextAlignment(.center)
 
-                Text("Enable permissions in Settings to capture ProRAW photos and 4K HEVC video, then save them to Photos.")
+                Text("Enable permissions in Settings to capture ProRAW photos and 4K video, then save them to Photos.")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(AppTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -994,6 +1414,68 @@ private struct PermissionView: View {
             }
             .padding(28)
         }
+    }
+}
+
+private struct DiscreteLandscapeSlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+
+    private let trackHeight: CGFloat = 5
+    private let thumbSize: CGFloat = 28
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = max(proxy.size.width, thumbSize)
+            let progress = normalizedProgress
+            let xPosition = (thumbSize / 2) + progress * max(width - thumbSize, 1)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.18))
+                    .frame(height: trackHeight)
+
+                Capsule()
+                    .fill(Color.white.opacity(0.30))
+                    .frame(width: max(xPosition, thumbSize / 2), height: trackHeight)
+
+                Circle()
+                    .fill(Color.white.opacity(0.98))
+                    .frame(width: thumbSize, height: thumbSize)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.black.opacity(0.16), lineWidth: 0.8)
+                    )
+                    .shadow(color: Color.black.opacity(0.16), radius: 3, y: 1)
+                    .position(x: xPosition, y: proxy.size.height / 2)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        updateValue(for: gesture.location.x, width: width)
+                    }
+            )
+        }
+        .frame(height: 34)
+    }
+
+    private var normalizedProgress: CGFloat {
+        let lower = range.lowerBound
+        let upper = range.upperBound
+        guard upper > lower else { return 0 }
+        let clamped = min(max(value, lower), upper)
+        return CGFloat((clamped - lower) / (upper - lower))
+    }
+
+    private func updateValue(for locationX: CGFloat, width: CGFloat) {
+        let usableWidth = max(width - thumbSize, 1)
+        let clampedX = min(max(locationX, thumbSize / 2), width - thumbSize / 2)
+        let progress = (clampedX - thumbSize / 2) / usableWidth
+        let rawValue = range.lowerBound + Double(progress) * (range.upperBound - range.lowerBound)
+        let steppedValue = (rawValue / step).rounded() * step
+        value = min(max(steppedValue, range.lowerBound), range.upperBound)
     }
 }
 
