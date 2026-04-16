@@ -1080,6 +1080,16 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    private func preparePhotoWhiteBalanceForCapture(on device: AVCaptureDevice) {
+        do {
+            try device.lockForConfiguration()
+            applyWhiteBalanceState(on: device, mode: .photo)
+            device.unlockForConfiguration()
+        } catch {
+            presentStatusMessage("Photo white balance update failed.")
+        }
+    }
+
     private func updateProExposureAutomationState() {
         stopProExposureAutomation()
 
@@ -1329,6 +1339,7 @@ final class CameraManager: NSObject, ObservableObject {
                 return
             }
 
+            self.preparePhotoWhiteBalanceForCapture(on: device)
             self.preparePhotoExposureForCapture(on: device) {
                 settings.photoQualityPrioritization = .quality
                 if let connection = self.photoOutput.connection(with: .video),

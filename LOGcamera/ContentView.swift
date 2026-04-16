@@ -1057,8 +1057,7 @@ private struct CameraScreen: View {
     }
 
     private var photoWhiteBalanceChipLabel: String {
-        let value = Int(cameraManager.whiteBalanceTemperature.rounded())
-        return "\(value)K"
+        cameraManager.whiteBalanceLabel
     }
 
     private func photoClampedIndex(for value: Double, count: Int) -> Int {
