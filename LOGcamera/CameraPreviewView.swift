@@ -12,6 +12,7 @@ struct CameraPreviewView: UIViewRepresentable {
         view.configureSession(cameraManager.session)
         view.bindPreviewFrames(to: cameraManager)
         view.setPreviewLookMode(cameraManager.previewLookMode)
+        view.setZebraEnabled(cameraManager.zebraEnabled)
         view.setCaptureMode(cameraManager.captureMode)
         view.setPreviewSuspended(isSuspended)
         view.applyConnectionConfiguration(from: cameraManager)
@@ -34,6 +35,7 @@ struct CameraPreviewView: UIViewRepresentable {
         uiView.configureSession(cameraManager.session)
         uiView.bindPreviewFrames(to: cameraManager)
         uiView.setPreviewLookMode(cameraManager.previewLookMode)
+        uiView.setZebraEnabled(cameraManager.zebraEnabled)
         uiView.setCaptureMode(cameraManager.captureMode)
         uiView.setPreviewSuspended(isSuspended)
         uiView.applyConnectionConfiguration(from: cameraManager)
@@ -57,6 +59,7 @@ final class PreviewView: UIView {
     var onFocusSelection: ((CGPoint, CGPoint, Bool) -> Void)?
 
     private let previewSurface = MTKView(frame: .zero)
+    private let zebraSurface = MTKView(frame: .zero)
     private let conversionPreviewLayer = AVCaptureVideoPreviewLayer()
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var previewRotationObservation: NSKeyValueObservation?
@@ -64,10 +67,12 @@ final class PreviewView: UIView {
     private weak var boundCameraManager: CameraManager?
     private var previewFrameCancellable: AnyCancellable?
     private var previewRenderer: MetalPreviewRenderer?
+    private var zebraRenderer: ZebraOverlayRenderer?
     private var currentPreviewRotationAngle: CGFloat = 0
     private var currentPreviewLookMode: PreviewLookMode = .log
     private var currentCaptureMode: CaptureMode = .video
     private var isPreviewSuspended = false
+    private var isZebraEnabled = false
 
     private lazy var tapGestureRecognizer = UITapGestureRecognizer(
         target: self,
@@ -88,6 +93,7 @@ final class PreviewView: UIView {
         clipsToBounds = true
         layer.masksToBounds = true
         setupPreviewSurface()
+        setupZebraSurface()
         setupConversionLayer()
         setupGestures()
     }
@@ -97,6 +103,7 @@ final class PreviewView: UIView {
         clipsToBounds = true
         layer.masksToBounds = true
         setupPreviewSurface()
+        setupZebraSurface()
         setupConversionLayer()
         setupGestures()
     }
@@ -143,6 +150,7 @@ final class PreviewView: UIView {
             guard let self else { return }
             guard !self.isPreviewSuspended else { return }
             self.previewRenderer?.enqueue(frame)
+            self.zebraRenderer?.enqueue(frame)
         }
         applyConnectionConfiguration(from: cameraManager)
     }
@@ -159,12 +167,27 @@ final class PreviewView: UIView {
         updateVisiblePreviewMode()
     }
 
+    func setZebraEnabled(_ isEnabled: Bool) {
+        guard isZebraEnabled != isEnabled else { return }
+        isZebraEnabled = isEnabled
+        zebraSurface.isHidden = !isEnabled
+        zebraRenderer?.setEnabled(isEnabled)
+        if isEnabled {
+            bringSubviewToFront(zebraSurface)
+        }
+        if !isEnabled {
+            zebraRenderer?.clear()
+        }
+    }
+
     func setPreviewSuspended(_ isSuspended: Bool) {
         guard isPreviewSuspended != isSuspended else { return }
         isPreviewSuspended = isSuspended
         previewSurface.isPaused = isSuspended
+        zebraSurface.isPaused = isSuspended
         if isSuspended {
             previewRenderer?.clear()
+            zebraRenderer?.clear()
         }
     }
 
@@ -177,6 +200,19 @@ final class PreviewView: UIView {
         addSubview(previewSurface)
         bringSubviewToFront(previewSurface)
         updateVisiblePreviewMode()
+    }
+
+    private func setupZebraSurface() {
+        zebraSurface.clipsToBounds = true
+        zebraSurface.isUserInteractionEnabled = false
+        zebraSurface.isOpaque = false
+        zebraSurface.backgroundColor = .clear
+        zebraSurface.clearColor = MTLClearColorMake(0, 0, 0, 0)
+        zebraSurface.frame = bounds
+        zebraRenderer = ZebraOverlayRenderer(view: zebraSurface)
+        zebraSurface.isHidden = true
+        addSubview(zebraSurface)
+        bringSubviewToFront(zebraSurface)
     }
 
     private func setupConversionLayer() {
@@ -270,7 +306,14 @@ final class PreviewView: UIView {
             : baseSize
 
         previewSurface.transform = .identity
+        zebraSurface.transform = .identity
         previewSurface.frame = CGRect(
+            x: (bounds.width - rotatedSize.width) / 2,
+            y: (bounds.height - rotatedSize.height) / 2,
+            width: rotatedSize.width,
+            height: rotatedSize.height
+        )
+        zebraSurface.frame = CGRect(
             x: (bounds.width - rotatedSize.width) / 2,
             y: (bounds.height - rotatedSize.height) / 2,
             width: rotatedSize.width,
@@ -282,6 +325,7 @@ final class PreviewView: UIView {
             transform = transform.scaledBy(x: -1, y: 1)
         }
         previewSurface.transform = transform
+        zebraSurface.transform = transform
     }
 
     private func updateVisiblePreviewMode() {
@@ -291,6 +335,9 @@ final class PreviewView: UIView {
         conversionPreviewLayer.isHidden = showMetalPreview
         if showMetalPreview {
             bringSubviewToFront(previewSurface)
+        }
+        if isZebraEnabled {
+            bringSubviewToFront(zebraSurface)
         }
     }
 

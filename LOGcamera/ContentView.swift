@@ -129,6 +129,11 @@ private struct CameraScreen: View {
         case whiteBalance
     }
 
+    private enum VideoQuickAdjustment {
+        case whiteBalance
+        case exposure
+    }
+
     @ObservedObject var cameraManager: CameraManager
     @State private var showsControlMenu = false
     @State private var showsExposurePanel = false
@@ -150,7 +155,7 @@ private struct CameraScreen: View {
 
             VStack(spacing: 0) {
                 topControlStrip
-                    .offset(y: 3)
+                    .offset(y: -5)
                 if cameraManager.captureMode == .photo {
                     Spacer(minLength: 0)
                     previewSurface
@@ -341,10 +346,40 @@ private struct CameraScreen: View {
 
             ZStack(alignment: .bottom) {
                 if cameraManager.captureMode == .video {
-                    HStack(alignment: .bottom) {
-                        Spacer()
-                        quickAdjustments
+                    if isLandscapePreviewOrientation {
+                        HStack(alignment: .bottom) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                if let activeVideoQuickAdjustment {
+                                    videoQuickAdjustmentPanel(for: activeVideoQuickAdjustment)
+                                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottomLeading)))
+                                }
+
+                                quickAdjustments
+                                    .hidden()
+                            }
+                            .padding(.leading, 2)
                             .padding(.bottom, 12)
+
+                            Spacer(minLength: 0)
+
+                            quickAdjustments
+                                .padding(.bottom, 12)
+                        }
+                    } else {
+                        HStack(alignment: .bottom) {
+                            Spacer(minLength: 0)
+
+                            VStack(alignment: .trailing, spacing: 10) {
+                                if let activeVideoQuickAdjustment {
+                                    videoQuickAdjustmentPanel(for: activeVideoQuickAdjustment)
+                                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottomTrailing)))
+                                }
+
+                                quickAdjustments
+                            }
+                            .padding(.trailing, 2)
+                            .padding(.bottom, 12)
+                        }
                     }
 
                     VStack(spacing: 12) {
@@ -379,7 +414,7 @@ private struct CameraScreen: View {
             .frame(
                 maxWidth: .infinity,
                 minHeight: cameraManager.captureMode == .video
-                    ? (showsQuickAdjustmentPanel ? 220 : 168)
+                    ? (showsQuickAdjustmentPanel ? 338 : 168)
                     : 136,
                 alignment: .bottom
             )
@@ -458,6 +493,15 @@ private struct CameraScreen: View {
             .frame(width: 272)
             .rotationEffect(.degrees(-90))
             .frame(width: 34, height: 272)
+
+            if adjustment == .whiteBalance {
+                Button("Auto") {
+                    cameraManager.setWhiteBalanceAuto()
+                }
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.accent)
+                .buttonStyle(.plain)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 14)
@@ -500,6 +544,16 @@ private struct CameraScreen: View {
                     .foregroundStyle(AppTheme.textPrimary)
                     .lineLimit(1)
                     .fixedSize()
+
+                if adjustment == .whiteBalance {
+                    Button("Auto") {
+                        cameraManager.setWhiteBalanceAuto()
+                    }
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.accent)
+                    .buttonStyle(.plain)
+                    .fixedSize()
+                }
             }
             .rotationEffect(.degrees(previewControlRotationDegrees))
             .frame(width: 56, height: 116)
@@ -519,14 +573,6 @@ private struct CameraScreen: View {
 
     private var quickAdjustments: some View {
         VStack(alignment: .trailing, spacing: 10) {
-            if showsWhiteBalancePanel {
-                whiteBalanceQuickPanel
-            }
-
-            if showsExposurePanel {
-                exposureQuickPanel
-            }
-
             quickAdjustButton(title: "WB", isActive: showsWhiteBalancePanel || isWhiteBalanceAdjusted) {
                 withAnimation(.easeOut(duration: 0.18)) {
                     showsExposurePanel = false
@@ -544,6 +590,26 @@ private struct CameraScreen: View {
             .opacity(cameraManager.supportsExposureBiasAdjustment ? 1 : 0.45)
 
             controlsButton
+        }
+    }
+
+    private var activeVideoQuickAdjustment: VideoQuickAdjustment? {
+        if showsWhiteBalancePanel {
+            return .whiteBalance
+        }
+        if showsExposurePanel {
+            return .exposure
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func videoQuickAdjustmentPanel(for adjustment: VideoQuickAdjustment) -> some View {
+        switch adjustment {
+        case .exposure:
+            videoVerticalExposureQuickPanel
+        case .whiteBalance:
+            videoVerticalWhiteBalanceQuickPanel
         }
     }
 
@@ -580,10 +646,69 @@ private struct CameraScreen: View {
             )
             .tint(AppTheme.accent)
         }
-        .padding(12)
-        .frame(width: 268)
-        .metalRoundedPanel(cornerRadius: 18)
-        .rotationEffect(.degrees(previewControlRotationDegrees))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.surfaceRaised.opacity(0.36))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
+        )
+    }
+
+    private var videoVerticalExposureQuickPanel: some View {
+        VStack(spacing: 10) {
+            Text("EXP")
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .tracking(0.5)
+                .foregroundStyle(AppTheme.textSecondary)
+                .rotationEffect(.degrees(previewControlRotationDegrees))
+
+            Text(String(format: "%+.1f", cameraManager.exposureBias))
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.textPrimary)
+                .rotationEffect(.degrees(previewControlRotationDegrees))
+
+            Slider(
+                value: Binding(
+                    get: { Double(cameraManager.exposureBias) },
+                    set: { cameraManager.setExposureBias(Float($0)) }
+                ),
+                in: Double(cameraManager.exposureBiasRange.lowerBound)...Double(cameraManager.exposureBiasRange.upperBound)
+            )
+            .tint(AppTheme.accent)
+            .frame(width: 236)
+            .rotationEffect(.degrees(-90))
+            .frame(width: 34, height: 236)
+
+            Button {
+                cameraManager.setExposureBias(0)
+            } label: {
+                Text("0.0")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(isExposureAdjusted ? Color.black : AppTheme.textSecondary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 22)
+                    .metalCapsulePanel(isActive: isExposureAdjusted)
+                    .rotationEffect(.degrees(previewControlRotationDegrees))
+            }
+            .buttonStyle(.plain)
+            .disabled(!isExposureAdjusted)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 14)
+        .frame(width: 60)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.surfaceRaised.opacity(0.36))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
+        )
     }
 
     private var whiteBalanceQuickPanel: some View {
@@ -628,10 +753,64 @@ private struct CameraScreen: View {
                     .foregroundStyle(AppTheme.textSecondary)
             }
         }
-        .padding(12)
-        .frame(width: 268)
-        .metalRoundedPanel(cornerRadius: 18)
-        .rotationEffect(.degrees(previewControlRotationDegrees))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.surfaceRaised.opacity(0.36))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
+        )
+    }
+
+    private var videoVerticalWhiteBalanceQuickPanel: some View {
+        VStack(spacing: 10) {
+            Text("WB")
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .tracking(0.5)
+                .foregroundStyle(AppTheme.textSecondary)
+                .rotationEffect(.degrees(previewControlRotationDegrees))
+
+            Text(cameraManager.whiteBalanceLabel)
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.textPrimary)
+                .rotationEffect(.degrees(previewControlRotationDegrees))
+
+            Slider(
+                value: Binding(
+                    get: { cameraManager.whiteBalanceTemperature },
+                    set: { cameraManager.setWhiteBalanceTemperature($0) }
+                ),
+                in: cameraManager.whiteBalanceTemperatureRange,
+                step: 10
+            )
+            .tint(AppTheme.accent)
+            .frame(width: 236)
+            .rotationEffect(.degrees(-90))
+            .frame(width: 34, height: 236)
+
+            Button("Auto") {
+                cameraManager.setWhiteBalanceAuto()
+            }
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(AppTheme.accent)
+            .buttonStyle(.plain)
+            .rotationEffect(.degrees(previewControlRotationDegrees))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 14)
+        .frame(width: 60)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.surfaceRaised.opacity(0.36))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
+        )
     }
 
     private var lensPickerStrip: some View {
@@ -1025,7 +1204,7 @@ private struct CameraSettingsView: View {
             .blendMode(.screen)
 
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
                     header
                     appSection
                     photoSection
@@ -1043,7 +1222,7 @@ private struct CameraSettingsView: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Settings")
-                    .font(.system(size: 28, weight: .heavy, design: .monospaced))
+                    .font(.system(size: 24, weight: .heavy, design: .monospaced))
                     .foregroundStyle(AppTheme.textPrimary)
             }
 
@@ -1065,22 +1244,43 @@ private struct CameraSettingsView: View {
 
     private var appSection: some View {
         settingsCard(title: "App") {
-            VStack(alignment: .leading, spacing: 12) {
-                subsectionLabel("Default Mode")
-                HStack(spacing: 8) {
-                    ForEach(CaptureMode.allCases) { mode in
-                        selectionButton(
-                            title: mode.title,
-                            isSelected: cameraManager.defaultCaptureMode == mode
-                        ) {
-                            cameraManager.selectDefaultCaptureMode(mode)
+            VStack(alignment: .leading, spacing: 14) {
+                settingsSubsection(title: "Default Mode") {
+                    HStack(spacing: 8) {
+                        ForEach(CaptureMode.allCases) { mode in
+                            selectionButton(
+                                title: mode.title,
+                                isSelected: cameraManager.defaultCaptureMode == mode
+                            ) {
+                                cameraManager.selectDefaultCaptureMode(mode)
+                            }
                         }
                     }
+
+                    settingsSupportingText("This mode opens when the app launches.")
                 }
 
-                Text("This mode opens when the app launches.")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(AppTheme.textSecondary)
+                settingsDivider()
+
+                settingsSubsection(title: "Monitoring") {
+                    HStack(spacing: 8) {
+                        selectionButton(
+                            title: "Zebra Off",
+                            isSelected: !cameraManager.zebraEnabled
+                        ) {
+                            cameraManager.zebraEnabled = false
+                        }
+
+                        selectionButton(
+                            title: "Zebra On",
+                            isSelected: cameraManager.zebraEnabled
+                        ) {
+                            cameraManager.zebraEnabled = true
+                        }
+                    }
+
+                    settingsSupportingText("Shows highlight zebras in photo and video preview.")
+                }
             }
         }
     }
@@ -1114,12 +1314,16 @@ private struct CameraSettingsView: View {
 
     private var photoSection: some View {
         settingsCard(title: "Photo") {
-            VStack(alignment: .leading, spacing: 16) {
-                subsectionLabel("Format")
-                photoCaptureOptions
+            VStack(alignment: .leading, spacing: 14) {
+                settingsSubsection(title: "Format") {
+                    photoCaptureOptions
+                }
 
-                subsectionLabel("Resolution")
-                photoResolutionOptions
+                settingsDivider()
+
+                settingsSubsection(title: "Resolution") {
+                    photoResolutionOptions
+                }
             }
         }
     }
@@ -1131,10 +1335,10 @@ private struct CameraSettingsView: View {
                     .foregroundStyle(.white.opacity(0.7))
                 Spacer()
                 Text(cameraManager.appleProRAWEnabled ? "ProRAW DNG" : "Unavailable")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(cameraManager.appleProRAWEnabled ? AppTheme.accent : .white.opacity(0.7))
             }
-            .font(.system(size: 13, weight: .medium))
+            .font(.system(size: 12, weight: .medium))
 
             HStack(spacing: 8) {
                 ForEach(PhotoCompanionFormat.allCases) { format in
@@ -1147,9 +1351,7 @@ private struct CameraSettingsView: View {
                 }
             }
 
-            Text("HEIC/JPEG is saved as a separate file next to the DNG.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(AppTheme.textSecondary)
+            settingsSupportingText("HEIC/JPEG is saved as a separate file next to the DNG.")
         }
     }
 
@@ -1166,32 +1368,46 @@ private struct CameraSettingsView: View {
                 }
             }
 
-            Text("12 MP uses the closest supported 12-megapixel capture size.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(AppTheme.textSecondary)
+            settingsSupportingText("12 MP uses the closest supported 12-megapixel capture size.")
         }
     }
 
     private var videoSection: some View {
         settingsCard(title: "Video") {
-            VStack(alignment: .leading, spacing: 16) {
-                subsectionLabel("Preview")
-                previewOptions
+            VStack(alignment: .leading, spacing: 14) {
+                settingsSubsection(title: "Preview") {
+                    previewOptions
+                }
 
-                subsectionLabel("Frame Rate")
-                frameRateOptions
+                settingsDivider()
 
-                subsectionLabel("Codec")
-                videoCodecOptions
+                settingsSubsection(title: "Frame Rate") {
+                    frameRateOptions
+                }
 
-                subsectionLabel("Bitrate")
-                bitrateOptions
+                settingsDivider()
 
-                subsectionLabel("Stabilization")
-                stabilizationOptions
+                settingsSubsection(title: "Codec") {
+                    videoCodecOptions
+                }
 
-                subsectionLabel("Locks")
-                lockOptions
+                settingsDivider()
+
+                settingsSubsection(title: "Bitrate") {
+                    bitrateOptions
+                }
+
+                settingsDivider()
+
+                settingsSubsection(title: "Stabilization") {
+                    stabilizationOptions
+                }
+
+                settingsDivider()
+
+                settingsSubsection(title: "Locks") {
+                    lockOptions
+                }
             }
         }
     }
@@ -1209,20 +1425,18 @@ private struct CameraSettingsView: View {
                 }
             }
 
-            Text(cameraManager.allowsCustomBitrate
-                 ? "HEVC uses the bitrate setting below."
-                 : "ProRes records larger files and uses its own internal data rate.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(AppTheme.textSecondary)
+            settingsSupportingText(
+                cameraManager.allowsCustomBitrate
+                ? "HEVC uses the bitrate setting below."
+                : "ProRes records larger files and uses its own internal data rate."
+            )
         }
     }
 
     private var stabilizationOptions: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             HStack {
-                Text("For video mode only.")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(AppTheme.textSecondary)
+                settingsSupportingText("For video mode only.")
                 Spacer()
             }
 
@@ -1244,10 +1458,10 @@ private struct CameraSettingsView: View {
                     .foregroundStyle(.white.opacity(0.7))
                 Spacer()
                 Text(cameraManager.activeStabilizationTitle)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(cameraManager.activeStabilizationMode == .off ? .white.opacity(0.7) : AppTheme.accent)
             }
-            .font(.system(size: 13, weight: .medium))
+            .font(.system(size: 12, weight: .medium))
         }
     }
 
@@ -1290,7 +1504,7 @@ private struct CameraSettingsView: View {
                 Button(cameraManager.usesCustomBitrate ? "Auto" : "Default") {
                     cameraManager.resetRecordingBitrateToDefault()
                 }
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(AppTheme.accent)
                 .buttonStyle(.plain)
 
@@ -1300,32 +1514,52 @@ private struct CameraSettingsView: View {
             .opacity(cameraManager.allowsCustomBitrate ? 1 : 0.45)
 
             if !cameraManager.allowsCustomBitrate {
-                Text("Selected codec manages bitrate internally.")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(AppTheme.textSecondary)
+                settingsSupportingText("Selected codec manages bitrate internally.")
             }
         }
     }
 
     private func settingsCard<Content: View>(title: String,
                                              @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(title.uppercased())
-                .font(.system(size: 12, weight: .black, design: .monospaced))
+                .font(.system(size: 13, weight: .black, design: .monospaced))
                 .tracking(1.2)
                 .foregroundStyle(AppTheme.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .center)
 
             content()
         }
-        .padding(16)
-        .metalRoundedPanel(cornerRadius: 24)
+        .padding(.horizontal, 15)
+        .padding(.vertical, 14)
+        .metalRoundedPanel(cornerRadius: 22)
     }
 
     private func subsectionLabel(_ title: String) -> some View {
         Text(title.uppercased())
-            .font(.system(size: 11, weight: .black, design: .monospaced))
-            .tracking(1.1)
+            .font(.system(size: 10, weight: .black, design: .monospaced))
+            .tracking(0.9)
             .foregroundStyle(AppTheme.textPrimary)
+    }
+
+    private func settingsSupportingText(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(AppTheme.textSecondary)
+    }
+
+    private func settingsDivider() -> some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.06))
+            .frame(height: 1)
+    }
+
+    private func settingsSubsection<Content: View>(title: String,
+                                                   @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            subsectionLabel(title)
+            content()
+        }
     }
 
     private func selectionButton(title: String,
@@ -1333,11 +1567,11 @@ private struct CameraSettingsView: View {
                                  action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
                 .frame(maxWidth: .infinity)
-                .frame(height: 42)
-                .metalRoundedPanel(cornerRadius: 14, isActive: isSelected)
+                .frame(height: 38)
+                .metalRoundedPanel(cornerRadius: 12, isActive: isSelected)
         }
         .buttonStyle(.plain)
     }
@@ -1348,16 +1582,16 @@ private struct CameraSettingsView: View {
         Button(action: action) {
             VStack(spacing: 1) {
                 Text("\(fps)")
-                    .font(.system(size: 16, weight: .bold, design: .monospaced))
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
 
                 Text("FPS")
-                    .font(.system(size: 10, weight: .black, design: .monospaced))
-                    .tracking(0.6)
+                    .font(.system(size: 9, weight: .black, design: .monospaced))
+                    .tracking(0.5)
             }
             .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
             .frame(maxWidth: .infinity)
-            .frame(height: 46)
-            .metalRoundedPanel(cornerRadius: 14, isActive: isSelected)
+            .frame(height: 42)
+            .metalRoundedPanel(cornerRadius: 12, isActive: isSelected)
         }
         .buttonStyle(.plain)
     }
@@ -1365,12 +1599,12 @@ private struct CameraSettingsView: View {
     private func lockChip(title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(isOn ? Color.black : AppTheme.textPrimary)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 12)
+                .padding(.vertical, 10)
                 .frame(maxWidth: .infinity)
-                .metalRoundedPanel(cornerRadius: 14, isActive: isOn)
+                .metalRoundedPanel(cornerRadius: 12, isActive: isOn)
         }
         .buttonStyle(.plain)
     }

@@ -296,6 +296,7 @@ final class CameraManager: NSObject, ObservableObject {
         static let photoCompanionFormat = "camera.photoCompanionFormat"
         static let photoResolutionOption = "camera.photoResolutionOption"
         static let previewLookMode = "camera.previewLookMode"
+        static let zebraEnabled = "camera.zebraEnabled"
         static let proExposureEnabled = "camera.proExposureEnabled"
         static let proExposureMode = "camera.proExposureMode"
         static let manualShutterSpeedDenominator = "camera.manualShutterSpeedDenominator"
@@ -366,6 +367,9 @@ final class CameraManager: NSObject, ObservableObject {
         didSet {
             UserDefaults.standard.set(previewLookMode.rawValue, forKey: SettingsKey.previewLookMode)
         }
+    }
+    @Published var zebraEnabled = false {
+        didSet { UserDefaults.standard.set(zebraEnabled, forKey: SettingsKey.zebraEnabled) }
     }
     @Published private(set) var recordingBitrateMbps = 30.0
     @Published private(set) var usesCustomBitrate = false
@@ -561,7 +565,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     var whiteBalanceLabel: String {
-        usesManualWhiteBalance ? String(format: "%.0f K", whiteBalanceTemperature) : "Auto"
+        usesManualWhiteBalance(for: captureMode) ? String(format: "%.0f K", whiteBalanceTemperature) : "Auto"
     }
 
     var whiteBalanceTemperature: Double {
@@ -596,7 +600,7 @@ final class CameraManager: NSObject, ObservableObject {
         case .video:
             return videoUsesManualWhiteBalance
         case .photo:
-            return photoUsesManualWhiteBalance
+            return photoProExposureEnabled && photoUsesManualWhiteBalance
         }
     }
 
@@ -672,7 +676,6 @@ final class CameraManager: NSObject, ObservableObject {
 
     func selectStabilizationMode(_ mode: CaptureStabilizationMode) {
         guard captureMode == .photo || supportedStabilizationModes.contains(mode) else {
-            presentStatusMessage("This stabilization mode is unavailable for the current lens/FPS/format.")
             return
         }
         selectedStabilizationMode = mode
@@ -714,6 +717,9 @@ final class CameraManager: NSObject, ObservableObject {
             proExposureEnabled = isEnabled
         }
         syncExposureConfiguration()
+        if captureMode == .photo {
+            syncWhiteBalanceConfiguration(mode: .photo)
+        }
     }
 
     func selectProExposureMode(_ mode: ProExposureMode) {
@@ -784,6 +790,19 @@ final class CameraManager: NSObject, ObservableObject {
                 self.presentStatusMessage("Exposure mode update failed.")
             }
             self.updateProExposureAutomationState()
+        }
+    }
+
+    private func syncWhiteBalanceConfiguration(mode: CaptureMode? = nil) {
+        sessionQueue.async {
+            guard let device = self.videoInput?.device ?? self.activeDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                self.applyWhiteBalanceState(on: device, mode: mode)
+                device.unlockForConfiguration()
+            } catch {
+                self.presentStatusMessage("White balance update failed.")
+            }
         }
     }
 
@@ -1692,11 +1711,12 @@ final class CameraManager: NSObject, ObservableObject {
 
         if let teleDevice {
             let teleScale = teleDisplayZoomFactor(for: teleDevice, relativeTo: wideDevice)
-            let teleLabel = teleFocalLengthLabel(for: teleScale)
-            let selectorID = "\(teleDevice.uniqueID)-\(teleLabel)"
+            let teleBaseFocalLength = teleFocalLength(for: teleScale)
+            let teleLabel = String(teleBaseFocalLength)
+            let selectorID = "\(teleDevice.uniqueID)-\(teleLabel)-cycle"
             options.append(
                 LensOption(
-                    id: selectorID,
+                    id: "\(teleDevice.uniqueID)-\(teleLabel)",
                     selectorID: selectorID,
                     deviceUniqueID: teleDevice.uniqueID,
                     displayName: teleLabel,
@@ -1709,6 +1729,46 @@ final class CameraManager: NSObject, ObservableObject {
                     cycleOrder: 0
                 )
             )
+
+            if teleDevice.activeFormat.videoMaxZoomFactor >= 1.5 {
+                let firstCropFocalLength = teleCropFocalLength(baseFocalLength: teleBaseFocalLength, multiplier: 1.5)
+                let firstCropLabel = String(firstCropFocalLength)
+                options.append(
+                    LensOption(
+                        id: "\(teleDevice.uniqueID)-\(firstCropLabel)",
+                        selectorID: selectorID,
+                        deviceUniqueID: teleDevice.uniqueID,
+                        displayName: firstCropLabel,
+                        shortName: firstCropLabel,
+                        selectorTitle: firstCropLabel,
+                        deviceType: teleDevice.deviceType,
+                        position: teleDevice.position,
+                        zoomFactor: 1.5,
+                        sortOrder: teleScale * 100,
+                        cycleOrder: 1
+                    )
+                )
+            }
+
+            if teleDevice.activeFormat.videoMaxZoomFactor >= 2.0 {
+                let secondCropFocalLength = teleCropFocalLength(baseFocalLength: teleBaseFocalLength, multiplier: 2.0)
+                let secondCropLabel = String(secondCropFocalLength)
+                options.append(
+                    LensOption(
+                        id: "\(teleDevice.uniqueID)-\(secondCropLabel)",
+                        selectorID: selectorID,
+                        deviceUniqueID: teleDevice.uniqueID,
+                        displayName: secondCropLabel,
+                        shortName: secondCropLabel,
+                        selectorTitle: secondCropLabel,
+                        deviceType: teleDevice.deviceType,
+                        position: teleDevice.position,
+                        zoomFactor: 2.0,
+                        sortOrder: teleScale * 100,
+                        cycleOrder: 2
+                    )
+                )
+            }
         }
 
         if options.isEmpty, let fallbackDevice = wideDevice ?? devices.first(where: { $0.position == .back }) ?? devices.first {
@@ -1757,17 +1817,21 @@ final class CameraManager: NSObject, ObservableObject {
         return min(max(Int(ratio.rounded()), 3), 5)
     }
 
-    private func teleFocalLengthLabel(for teleScale: Int) -> String {
+    private func teleFocalLength(for teleScale: Int) -> Int {
         switch teleScale {
         case 3:
-            return "70"
+            return 70
         case 4:
-            return "100"
+            return 100
         case 5:
-            return "120"
+            return 120
         default:
-            return String(teleScale * 24)
+            return teleScale * 24
         }
+    }
+
+    private func teleCropFocalLength(baseFocalLength: Int, multiplier: Double) -> Int {
+        Int((Double(baseFocalLength) * multiplier).rounded())
     }
 
     private static func defaultLensOption(from options: [LensOption]) -> LensOption? {
@@ -2226,10 +2290,6 @@ final class CameraManager: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 self.activeStabilizationMode = activeMode
                 self.activeStabilizationTitle = CaptureStabilizationMode.title(for: activeAVMode)
-                if self.selectedStabilizationMode != .off,
-                   activeMode == .off {
-                    self.presentStatusMessage("Selected stabilization is not active for the current lens/FPS/format.")
-                }
             }
         }
     }
@@ -2751,6 +2811,10 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
 
+        if defaults.object(forKey: SettingsKey.zebraEnabled) != nil {
+            zebraEnabled = defaults.bool(forKey: SettingsKey.zebraEnabled)
+        }
+
         if defaults.object(forKey: SettingsKey.proExposureEnabled) != nil {
             proExposureEnabled = defaults.bool(forKey: SettingsKey.proExposureEnabled)
         }
@@ -3014,8 +3078,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func publishPreviewFrame(from sampleBuffer: CMSampleBuffer) {
-        guard colorProfile != .unavailable,
-              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return
         }
 
