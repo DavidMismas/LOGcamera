@@ -671,8 +671,7 @@ final class CameraManager: NSObject, ObservableObject {
     private let focusLockDelay: TimeInterval = 0.2
     private let autoExposureSettleMaximumDuration: TimeInterval = 0.75
     private let autoExposureSettleOffsetThreshold: Float = 0.12
-    private let defaultAutoExposureRectOfInterest = CGRect(x: 0.18, y: 0.18, width: 0.64, height: 0.64)
-    private let tappedAutoExposureRectSize: CGFloat = 0.28
+    private let fullFrameAutoExposureRectOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
 
     private var isSessionConfigured = false
     private var videoInput: AVCaptureDeviceInput?
@@ -1222,20 +1221,10 @@ final class CameraManager: NSObject, ObservableObject {
             device.exposurePointOfInterest = CGPoint(x: 0.5, y: 0.5)
         }
         if device.isExposureRectOfInterestSupported {
-            device.exposureRectOfInterest = defaultAutoExposureRectOfInterest
+            // Keep auto exposure evaluating the whole frame so bright windows or lamps
+            // do not trigger abrupt jumps when they cross a custom ROI boundary.
+            device.exposureRectOfInterest = fullFrameAutoExposureRectOfInterest
         }
-    }
-
-    private func autoExposureRect(around point: CGPoint) -> CGRect {
-        let halfSize = tappedAutoExposureRectSize / 2
-        let originX = min(max(point.x - halfSize, 0), 1 - tappedAutoExposureRectSize)
-        let originY = min(max(point.y - halfSize, 0), 1 - tappedAutoExposureRectSize)
-        return CGRect(
-            x: originX,
-            y: originY,
-            width: tappedAutoExposureRectSize,
-            height: tappedAutoExposureRectSize
-        )
     }
 
     func setWhiteBalanceTemperature(_ value: Double) {
@@ -3028,7 +3017,7 @@ final class CameraManager: NSObject, ObservableObject {
                 if !self.isCurrentProExposureEnabled && device.isExposurePointOfInterestSupported {
                     device.exposurePointOfInterest = point
                     if device.isExposureRectOfInterestSupported {
-                        device.exposureRectOfInterest = self.autoExposureRect(around: point)
+                        device.exposureRectOfInterest = self.fullFrameAutoExposureRectOfInterest
                     }
                 }
 
