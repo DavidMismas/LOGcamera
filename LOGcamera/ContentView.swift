@@ -122,6 +122,32 @@ struct ContentView: View {
     }
 }
 
+private struct RuleOfThirdsGridOverlay: View {
+    var body: some View {
+        GeometryReader { geometry in
+            Path { path in
+                let width = geometry.size.width
+                let height = geometry.size.height
+                let verticalOffsets = [width / 3, (width * 2) / 3]
+                let horizontalOffsets = [height / 3, (height * 2) / 3]
+
+                for x in verticalOffsets {
+                    path.move(to: CGPoint(x: x, y: 0))
+                    path.addLine(to: CGPoint(x: x, y: height))
+                }
+
+                for y in horizontalOffsets {
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: width, y: y))
+                }
+            }
+            .stroke(Color.white.opacity(0.34), lineWidth: 1)
+            .shadow(color: Color.black.opacity(0.28), radius: 0, x: 0, y: 0)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 private struct CameraScreen: View {
     private enum PhotoProAdjustment: String {
         case shutterSpeed
@@ -138,6 +164,7 @@ private struct CameraScreen: View {
     @State private var showsControlMenu = false
     @State private var showsExposurePanel = false
     @State private var showsWhiteBalancePanel = false
+    @State private var showsPhotoExposureBiasPanel = false
     @State private var activePhotoProAdjustment: PhotoProAdjustment?
     @State private var previewControlRotationDegrees: Double = 0
 
@@ -185,10 +212,13 @@ private struct CameraScreen: View {
         .onChange(of: cameraManager.captureMode) { _, _ in
             showsExposurePanel = false
             showsWhiteBalancePanel = false
+            showsPhotoExposureBiasPanel = false
             activePhotoProAdjustment = nil
         }
         .onChange(of: cameraManager.photoProExposureEnabled) { _, isEnabled in
-            if !isEnabled {
+            if isEnabled {
+                showsPhotoExposureBiasPanel = false
+            } else {
                 activePhotoProAdjustment = nil
             }
         }
@@ -199,6 +229,7 @@ private struct CameraScreen: View {
             HStack(alignment: .bottom, spacing: 8) {
                 if cameraManager.captureMode == .photo {
                     compactControlChip(title: "PRO", isSelected: cameraManager.photoProExposureEnabled) {
+                        showsPhotoExposureBiasPanel = false
                         cameraManager.setProExposureEnabled(!cameraManager.photoProExposureEnabled)
                     }
 
@@ -208,6 +239,7 @@ private struct CameraScreen: View {
                             isSelected: activePhotoProAdjustment == .shutterSpeed
                         ) {
                             withAnimation(.easeOut(duration: 0.18)) {
+                                showsPhotoExposureBiasPanel = false
                                 activePhotoProAdjustment = activePhotoProAdjustment == .shutterSpeed ? nil : .shutterSpeed
                             }
                         }
@@ -217,6 +249,7 @@ private struct CameraScreen: View {
                             isSelected: activePhotoProAdjustment == .iso
                         ) {
                             withAnimation(.easeOut(duration: 0.18)) {
+                                showsPhotoExposureBiasPanel = false
                                 activePhotoProAdjustment = activePhotoProAdjustment == .iso ? nil : .iso
                             }
                         }
@@ -226,6 +259,7 @@ private struct CameraScreen: View {
                             isSelected: activePhotoProAdjustment == .whiteBalance
                         ) {
                             withAnimation(.easeOut(duration: 0.18)) {
+                                showsPhotoExposureBiasPanel = false
                                 activePhotoProAdjustment = activePhotoProAdjustment == .whiteBalance ? nil : .whiteBalance
                             }
                         }
@@ -291,6 +325,11 @@ private struct CameraScreen: View {
             .frame(maxWidth: .infinity)
             .background(Color.black)
             .overlay {
+                if shouldShowCompositionGrid {
+                    RuleOfThirdsGridOverlay()
+                }
+            }
+            .overlay {
                 FocusFeedbackOverlay(feedback: cameraManager.focusFeedback)
             }
             .overlay(alignment: focusLockBadgeAlignment) {
@@ -320,6 +359,16 @@ private struct CameraScreen: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .topTrailing)))
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                if cameraManager.captureMode == .photo,
+                   !isLandscapePreviewOrientation,
+                   showsPhotoExposureBiasPanel {
+                    photoExposureBiasAdjustmentPanel
+                        .padding(.top, 76)
+                        .padding(.trailing, 14)
+                        .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .topTrailing)))
+                }
+            }
             .overlay(alignment: .bottom) {
                 Group {
                     if cameraManager.captureMode == .photo {
@@ -331,6 +380,15 @@ private struct CameraScreen: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 8)
             }
+    }
+
+    private var shouldShowCompositionGrid: Bool {
+        switch cameraManager.captureMode {
+        case .photo:
+            return cameraManager.photoGridEnabled
+        case .video:
+            return cameraManager.videoGridEnabled
+        }
     }
 
     private var bottomOverlay: some View {
@@ -433,11 +491,15 @@ private struct CameraScreen: View {
             }
 
             if isLandscapePreviewOrientation,
-               let activePhotoProAdjustment,
-               cameraManager.photoProExposureEnabled {
+               cameraManager.photoProExposureEnabled || showsPhotoExposureBiasPanel {
                 HStack {
                     Spacer(minLength: 0)
-                    photoLandscapeAdjustmentPanel(for: activePhotoProAdjustment)
+                    if cameraManager.photoProExposureEnabled,
+                       let activePhotoProAdjustment {
+                        photoLandscapeAdjustmentPanel(for: activePhotoProAdjustment)
+                    } else if showsPhotoExposureBiasPanel {
+                        photoLandscapeExposureBiasAdjustmentPanel
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottomTrailing)))
@@ -459,8 +521,11 @@ private struct CameraScreen: View {
             HStack {
                 captureModeSwitchButton
                 Spacer()
-                controlsButton
-                    .frame(width: 62, height: 62)
+                VStack(spacing: 8) {
+                    photoExposureBiasButton
+                    controlsButton
+                        .frame(width: 62, height: 62)
+                }
             }
 
             recordButton
@@ -561,6 +626,85 @@ private struct CameraScreen: View {
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity)
         .frame(height: 60)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(AppTheme.surfaceRaised.opacity(0.36))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
+        )
+    }
+
+    private var photoExposureBiasAdjustmentPanel: some View {
+        VStack(spacing: 10) {
+            Text("EV")
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .tracking(0.5)
+                .foregroundStyle(AppTheme.textSecondary)
+
+            Text(String(format: "%+.1f", cameraManager.exposureBias))
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.textPrimary)
+
+            DiscreteLandscapeSlider(
+                value: photoExposureBiasSliderBinding,
+                range: 0...Double(max(photoExposureBiasValues.count - 1, 0)),
+                step: 1
+            )
+            .frame(width: 272)
+            .rotationEffect(.degrees(-90))
+            .frame(width: 34, height: 272)
+
+            photoExposureBiasResetButton
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 14)
+        .frame(width: 60)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.surfaceRaised.opacity(0.36))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
+        )
+        .rotationEffect(.degrees(previewControlRotationDegrees))
+    }
+
+    private var photoLandscapeExposureBiasAdjustmentPanel: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                DiscreteLandscapeSlider(
+                    value: photoExposureBiasSliderBinding,
+                    range: 0...Double(max(photoExposureBiasValues.count - 1, 0)),
+                    step: 1
+                )
+                .frame(maxWidth: .infinity)
+
+                VStack(alignment: .center, spacing: 4) {
+                    Text("EV")
+                        .font(.system(size: 10, weight: .black, design: .monospaced))
+                        .tracking(0.4)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .lineLimit(1)
+                        .fixedSize()
+
+                    Text(String(format: "%+.1f", cameraManager.exposureBias))
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                .rotationEffect(.degrees(previewControlRotationDegrees))
+                .frame(width: 56, height: 116)
+            }
+
+            photoExposureBiasResetButton
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity)
+        .frame(height: 92)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(AppTheme.surfaceRaised.opacity(0.36))
@@ -910,6 +1054,7 @@ private struct CameraScreen: View {
         Button {
             showsExposurePanel = false
             showsWhiteBalancePanel = false
+            showsPhotoExposureBiasPanel = false
             showsControlMenu.toggle()
         } label: {
             Image(systemName: "slider.horizontal.3")
@@ -936,6 +1081,23 @@ private struct CameraScreen: View {
 
     private var isLandscapePreviewOrientation: Bool {
         abs(previewControlRotationDegrees) == 90
+    }
+
+    private var photoExposureBiasValues: [Double] {
+        (0...100).map { Double($0) / 10 - 5 }
+    }
+
+    private var photoExposureBiasSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(photoCurrentExposureBiasIndex)
+            },
+            set: { newValue in
+                let index = photoClampedIndex(for: newValue, count: photoExposureBiasValues.count)
+                guard photoExposureBiasValues.indices.contains(index) else { return }
+                cameraManager.setExposureBias(Float(photoExposureBiasValues[index]))
+            }
+        )
     }
 
     private var photoShutterSliderBinding: Binding<Double> {
@@ -1002,6 +1164,16 @@ private struct CameraScreen: View {
         let currentTemperature = cameraManager.whiteBalanceTemperature
         return values.enumerated().min { lhs, rhs in
             abs(lhs.element - currentTemperature) < abs(rhs.element - currentTemperature)
+        }?.offset ?? 0
+    }
+
+    private var photoCurrentExposureBiasIndex: Int {
+        let values = photoExposureBiasValues
+        guard !values.isEmpty else { return 0 }
+
+        let currentBias = Double(cameraManager.exposureBias)
+        return values.enumerated().min { lhs, rhs in
+            abs(lhs.element - currentBias) < abs(rhs.element - currentBias)
         }?.offset ?? 0
     }
 
@@ -1118,6 +1290,45 @@ private struct CameraScreen: View {
         }
         .buttonStyle(.plain)
         .rotationEffect(.degrees(previewControlRotationDegrees))
+    }
+
+    private var photoExposureBiasButton: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.18)) {
+                activePhotoProAdjustment = nil
+                showsPhotoExposureBiasPanel.toggle()
+            }
+        } label: {
+            Text("EV")
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .tracking(0.4)
+                .foregroundStyle(photoExposureBiasButtonIsActive ? Color.black : AppTheme.textPrimary)
+                .frame(width: 44, height: 28)
+                .metalCapsulePanel(isActive: photoExposureBiasButtonIsActive)
+        }
+        .buttonStyle(.plain)
+        .disabled(!cameraManager.supportsExposureBiasAdjustment)
+        .opacity(cameraManager.supportsExposureBiasAdjustment ? 1 : 0.45)
+        .rotationEffect(.degrees(previewControlRotationDegrees))
+    }
+
+    private var photoExposureBiasButtonIsActive: Bool {
+        cameraManager.supportsExposureBiasAdjustment && (showsPhotoExposureBiasPanel || isExposureAdjusted)
+    }
+
+    private var photoExposureBiasResetButton: some View {
+        Button {
+            cameraManager.setExposureBias(0)
+        } label: {
+            Text("0.0")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(isExposureAdjusted ? Color.black : AppTheme.textSecondary)
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .metalCapsulePanel(isActive: isExposureAdjusted)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isExposureAdjusted)
     }
 
     private func compactToggleChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
@@ -1262,23 +1473,56 @@ private struct CameraSettingsView: View {
                 settingsDivider()
 
                 settingsSubsection(title: "Monitoring") {
-                    HStack(spacing: 8) {
-                        selectionButton(
-                            title: "Zebra Off",
-                            isSelected: !cameraManager.zebraEnabled
-                        ) {
-                            cameraManager.zebraEnabled = false
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            selectionButton(
+                                title: "Zebra Off",
+                                isSelected: !cameraManager.zebraEnabled
+                            ) {
+                                cameraManager.zebraEnabled = false
+                            }
+
+                            selectionButton(
+                                title: "Zebra On",
+                                isSelected: cameraManager.zebraEnabled
+                            ) {
+                                cameraManager.zebraEnabled = true
+                            }
                         }
 
-                        selectionButton(
-                            title: "Zebra On",
-                            isSelected: cameraManager.zebraEnabled
-                        ) {
-                            cameraManager.zebraEnabled = true
+                        HStack {
+                            Text("Threshold")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(AppTheme.textPrimary)
+                            Spacer()
+                            Text("\(cameraManager.zebraThresholdPercent)%")
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundStyle(AppTheme.accent)
+                        }
+
+                        Slider(
+                            value: Binding(
+                                get: { Double(cameraManager.zebraThresholdPercent) },
+                                set: { cameraManager.setZebraThresholdPercent(Int($0.rounded())) }
+                            ),
+                            in: 80...100,
+                            step: 1
+                        )
+                        .tint(AppTheme.accent)
+
+                        HStack(spacing: 8) {
+                            ForEach(ZebraChannel.allCases) { channel in
+                                selectionButton(
+                                    title: channel.title,
+                                    isSelected: cameraManager.zebraChannel == channel
+                                ) {
+                                    cameraManager.selectZebraChannel(channel)
+                                }
+                            }
                         }
                     }
 
-                    settingsSupportingText("Shows highlight zebras in photo and video preview.")
+                    settingsSupportingText("Uses the selected RGB channel and shows zebras once that channel reaches the chosen threshold.")
                 }
             }
         }
@@ -1322,6 +1566,12 @@ private struct CameraSettingsView: View {
 
                 settingsSubsection(title: "Resolution") {
                     photoResolutionOptions
+                }
+
+                settingsDivider()
+
+                settingsSubsection(title: "Composition") {
+                    photoCompositionOptions
                 }
             }
         }
@@ -1371,6 +1621,28 @@ private struct CameraSettingsView: View {
         }
     }
 
+    private var photoCompositionOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                selectionButton(
+                    title: "Grid Off",
+                    isSelected: !cameraManager.photoGridEnabled
+                ) {
+                    cameraManager.photoGridEnabled = false
+                }
+
+                selectionButton(
+                    title: "Grid On",
+                    isSelected: cameraManager.photoGridEnabled
+                ) {
+                    cameraManager.photoGridEnabled = true
+                }
+            }
+
+            settingsSupportingText("Shows a 3×3 rule-of-thirds grid on the photo preview.")
+        }
+    }
+
     private var videoSection: some View {
         settingsCard(title: "Video") {
             VStack(alignment: .leading, spacing: 14) {
@@ -1407,7 +1679,35 @@ private struct CameraSettingsView: View {
                 settingsSubsection(title: "Locks") {
                     lockOptions
                 }
+
+                settingsDivider()
+
+                settingsSubsection(title: "Composition") {
+                    videoCompositionOptions
+                }
             }
+        }
+    }
+
+    private var videoCompositionOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                selectionButton(
+                    title: "Grid Off",
+                    isSelected: !cameraManager.videoGridEnabled
+                ) {
+                    cameraManager.videoGridEnabled = false
+                }
+
+                selectionButton(
+                    title: "Grid On",
+                    isSelected: cameraManager.videoGridEnabled
+                ) {
+                    cameraManager.videoGridEnabled = true
+                }
+            }
+
+            settingsSupportingText("Shows a 3×3 rule-of-thirds grid on the video preview.")
         }
     }
 

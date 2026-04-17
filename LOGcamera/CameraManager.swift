@@ -275,6 +275,47 @@ enum PhotoResolutionOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum ZebraChannel: String, CaseIterable, Identifiable {
+    case red
+    case green
+    case blue
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .red:
+            return "R"
+        case .green:
+            return "G"
+        case .blue:
+            return "B"
+        }
+    }
+
+    var colorComponents: (red: Float, green: Float, blue: Float) {
+        switch self {
+        case .red:
+            return (1.0, 0.15, 0.15)
+        case .green:
+            return (0.1, 0.95, 0.25)
+        case .blue:
+            return (0.15, 0.55, 1.0)
+        }
+    }
+
+    var kernelIndex: Float {
+        switch self {
+        case .red:
+            return 0
+        case .green:
+            return 1
+        case .blue:
+            return 2
+        }
+    }
+}
+
 final class CameraManager: NSObject, ObservableObject {
     private enum SettingsKey {
         static let captureMode = "camera.captureMode"
@@ -297,6 +338,10 @@ final class CameraManager: NSObject, ObservableObject {
         static let photoResolutionOption = "camera.photoResolutionOption"
         static let previewLookMode = "camera.previewLookMode"
         static let zebraEnabled = "camera.zebraEnabled"
+        static let zebraThresholdPercent = "camera.zebraThresholdPercent"
+        static let zebraChannel = "camera.zebraChannel"
+        static let photoGridEnabled = "camera.photoGridEnabled"
+        static let videoGridEnabled = "camera.videoGridEnabled"
         static let proExposureEnabled = "camera.proExposureEnabled"
         static let proExposureMode = "camera.proExposureMode"
         static let manualShutterSpeedDenominator = "camera.manualShutterSpeedDenominator"
@@ -370,6 +415,18 @@ final class CameraManager: NSObject, ObservableObject {
     }
     @Published var zebraEnabled = false {
         didSet { UserDefaults.standard.set(zebraEnabled, forKey: SettingsKey.zebraEnabled) }
+    }
+    @Published var zebraThresholdPercent = 95 {
+        didSet { UserDefaults.standard.set(zebraThresholdPercent, forKey: SettingsKey.zebraThresholdPercent) }
+    }
+    @Published var zebraChannel: ZebraChannel = .red {
+        didSet { UserDefaults.standard.set(zebraChannel.rawValue, forKey: SettingsKey.zebraChannel) }
+    }
+    @Published var photoGridEnabled = false {
+        didSet { UserDefaults.standard.set(photoGridEnabled, forKey: SettingsKey.photoGridEnabled) }
+    }
+    @Published var videoGridEnabled = false {
+        didSet { UserDefaults.standard.set(videoGridEnabled, forKey: SettingsKey.videoGridEnabled) }
     }
     @Published private(set) var recordingBitrateMbps = 30.0
     @Published private(set) var usesCustomBitrate = false
@@ -471,6 +528,10 @@ final class CameraManager: NSObject, ObservableObject {
         case .photo:
             return !photoProExposureEnabled
         }
+    }
+
+    var zebraThreshold: Float {
+        Float(zebraThresholdPercent) / 100
     }
 
     var isCurrentProExposureEnabled: Bool {
@@ -914,6 +975,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func setExposureBias(_ value: Float) {
+        guard supportsExposureBiasAdjustment else { return }
         let clamped = min(max(value, exposureBiasRange.lowerBound), exposureBiasRange.upperBound)
         exposureBias = clamped
         UserDefaults.standard.set(Double(clamped), forKey: SettingsKey.exposureBias)
@@ -928,6 +990,14 @@ final class CameraManager: NSObject, ObservableObject {
                 self.presentStatusMessage("Exposure adjustment failed.")
             }
         }
+    }
+
+    func setZebraThresholdPercent(_ value: Int) {
+        zebraThresholdPercent = min(max(value, 80), 100)
+    }
+
+    func selectZebraChannel(_ channel: ZebraChannel) {
+        zebraChannel = channel
     }
 
     private func idealShutterSpeedDenominator(for frameRate: Int) -> Int {
@@ -2824,6 +2894,23 @@ final class CameraManager: NSObject, ObservableObject {
 
         if defaults.object(forKey: SettingsKey.zebraEnabled) != nil {
             zebraEnabled = defaults.bool(forKey: SettingsKey.zebraEnabled)
+        }
+
+        if defaults.object(forKey: SettingsKey.zebraThresholdPercent) != nil {
+            zebraThresholdPercent = min(max(defaults.integer(forKey: SettingsKey.zebraThresholdPercent), 80), 100)
+        }
+
+        if let rawZebraChannel = defaults.string(forKey: SettingsKey.zebraChannel),
+           let zebraChannel = ZebraChannel(rawValue: rawZebraChannel) {
+            self.zebraChannel = zebraChannel
+        }
+
+        if defaults.object(forKey: SettingsKey.photoGridEnabled) != nil {
+            photoGridEnabled = defaults.bool(forKey: SettingsKey.photoGridEnabled)
+        }
+
+        if defaults.object(forKey: SettingsKey.videoGridEnabled) != nil {
+            videoGridEnabled = defaults.bool(forKey: SettingsKey.videoGridEnabled)
         }
 
         if defaults.object(forKey: SettingsKey.proExposureEnabled) != nil {

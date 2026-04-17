@@ -13,6 +13,8 @@ struct CameraPreviewView: UIViewRepresentable {
         view.bindPreviewFrames(to: cameraManager)
         view.setPreviewLookMode(cameraManager.previewLookMode)
         view.setZebraEnabled(cameraManager.zebraEnabled)
+        view.setZebraThreshold(cameraManager.zebraThreshold)
+        view.setZebraChannel(cameraManager.zebraChannel)
         view.setCaptureMode(cameraManager.captureMode)
         view.setPreviewSuspended(isSuspended)
         view.applyConnectionConfiguration(from: cameraManager)
@@ -36,6 +38,8 @@ struct CameraPreviewView: UIViewRepresentable {
         uiView.bindPreviewFrames(to: cameraManager)
         uiView.setPreviewLookMode(cameraManager.previewLookMode)
         uiView.setZebraEnabled(cameraManager.zebraEnabled)
+        uiView.setZebraThreshold(cameraManager.zebraThreshold)
+        uiView.setZebraChannel(cameraManager.zebraChannel)
         uiView.setCaptureMode(cameraManager.captureMode)
         uiView.setPreviewSuspended(isSuspended)
         uiView.applyConnectionConfiguration(from: cameraManager)
@@ -158,6 +162,7 @@ final class PreviewView: UIView {
     func setPreviewLookMode(_ mode: PreviewLookMode) {
         currentPreviewLookMode = mode
         previewRenderer?.setPreviewLookMode(mode)
+        zebraRenderer?.setPreviewLookMode(mode)
         updateVisiblePreviewMode()
     }
 
@@ -178,6 +183,14 @@ final class PreviewView: UIView {
         if !isEnabled {
             zebraRenderer?.clear()
         }
+    }
+
+    func setZebraThreshold(_ threshold: Float) {
+        zebraRenderer?.setThreshold(threshold)
+    }
+
+    func setZebraChannel(_ channel: ZebraChannel) {
+        zebraRenderer?.setChannel(channel)
     }
 
     func setPreviewSuspended(_ isSuspended: Bool) {

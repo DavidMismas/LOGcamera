@@ -6,28 +6,40 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
     private weak var view: MTKView?
     private let commandQueue: MTLCommandQueue
     private let context: CIContext
+    private let lutProcessor = PreviewLUTProcessor()
     private let stateQueue = DispatchQueue(label: "com.logcamera.zebraOverlayState")
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
 
     private var latestFrame: PreviewFrame?
     private var isEnabled = false
+    private var threshold: Float = 0.95
+    private var channel: ZebraChannel = .red
+    private var previewLookMode: PreviewLookMode = .log
 
     private static let zebraKernel: CIColorKernel? = {
         let source = """
-        kernel vec4 zebra(__sample image, float threshold, float stripeWidth) {
+        kernel vec4 zebra(__sample image,
+                          float threshold,
+                          float softness,
+                          float stripeWidth,
+                          float channelIndex,
+                          float stripeRed,
+                          float stripeGreen,
+                          float stripeBlue) {
             float3 rgb = clamp(image.rgb, 0.0, 1.0);
-            float luma = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
-            if (luma < threshold) {
+            float signal = channelIndex < 0.5 ? rgb.r : (channelIndex < 1.5 ? rgb.g : rgb.b);
+            float mask = smoothstep(threshold - softness, threshold + softness, signal);
+            if (mask <= 0.001) {
                 return vec4(0.0, 0.0, 0.0, 0.0);
             }
 
             vec2 p = destCoord();
             float stripe = step(0.5, fract((p.x + p.y) / stripeWidth));
             if (stripe > 0.0) {
-                return vec4(1.0, 0.95, 0.15, 0.76);
+                return vec4(stripeRed, stripeGreen, stripeBlue, 0.90 * mask);
             }
 
-            return vec4(0.0, 0.0, 0.0, 0.34);
+            return vec4(0.0, 0.0, 0.0, 0.60 * mask);
         }
         """
         return CIColorKernel(source: source)
@@ -66,6 +78,24 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
         }
     }
 
+    func setThreshold(_ threshold: Float) {
+        stateQueue.async {
+            self.threshold = min(max(threshold, 0.80), 1.0)
+        }
+    }
+
+    func setChannel(_ channel: ZebraChannel) {
+        stateQueue.async {
+            self.channel = channel
+        }
+    }
+
+    func setPreviewLookMode(_ mode: PreviewLookMode) {
+        stateQueue.async {
+            self.previewLookMode = mode
+        }
+    }
+
     func enqueue(_ frame: PreviewFrame) {
         stateQueue.async {
             self.latestFrame = frame
@@ -86,13 +116,22 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
 
         let frame = stateQueue.sync { latestFrame }
         let overlayEnabled = stateQueue.sync { isEnabled }
+        let threshold = stateQueue.sync { self.threshold }
+        let channel = stateQueue.sync { self.channel }
+        let previewLookMode = stateQueue.sync { self.previewLookMode }
         let bounds = CGRect(origin: .zero, size: view.drawableSize)
         guard bounds.width > 0, bounds.height > 0 else { return }
 
         let outputImage: CIImage
         if overlayEnabled,
            let frame,
-           let zebraImage = makeZebraImage(for: frame, in: bounds) {
+           let zebraImage = makeZebraImage(
+            for: frame,
+            in: bounds,
+            threshold: threshold,
+            channel: channel,
+            lookMode: previewLookMode
+           ) {
             outputImage = zebraImage
         } else {
             outputImage = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: bounds)
@@ -112,18 +151,33 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
-    private func makeZebraImage(for frame: PreviewFrame, in bounds: CGRect) -> CIImage? {
+    private func makeZebraImage(for frame: PreviewFrame,
+                                in bounds: CGRect,
+                                threshold: Float,
+                                channel: ZebraChannel,
+                                lookMode: PreviewLookMode) -> CIImage? {
         guard let kernel = Self.zebraKernel else { return nil }
-
-        var options: [CIImageOption: Any] = [.applyCleanAperture: true]
-        if let sourceColorSpace = sourceColorSpace(for: frame.pixelBuffer) {
-            options[.colorSpace] = sourceColorSpace
-        }
-
-        let sourceImage = CIImage(cvPixelBuffer: frame.pixelBuffer, options: options)
+        guard let sourceImage = monitoringImage(for: frame, lookMode: lookMode) else { return nil }
+        let measurementImage = sourceImage
+            .clampedToExtent()
+            .applyingFilter(
+                "CIGaussianBlur",
+                parameters: [kCIInputRadiusKey: 1.2]
+            )
+            .cropped(to: sourceImage.extent)
+        let stripeColor = channel.colorComponents
         guard let overlayImage = kernel.apply(
-            extent: sourceImage.extent,
-            arguments: [sourceImage, 0.95, 18.0]
+            extent: measurementImage.extent,
+            arguments: [
+                measurementImage,
+                threshold,
+                0.015,
+                18.0,
+                channel.kernelIndex,
+                stripeColor.red,
+                stripeColor.green,
+                stripeColor.blue
+            ]
         ) else {
             return nil
         }
@@ -131,6 +185,36 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
         return overlayImage.transformed(
             by: aspectFillTransform(for: sourceImage.extent, in: bounds)
         )
+    }
+
+    private func monitoringImage(for frame: PreviewFrame, lookMode: PreviewLookMode) -> CIImage? {
+        switch lookMode {
+        case .log:
+            var options: [CIImageOption: Any] = [.applyCleanAperture: true]
+            if let sourceColorSpace = sourceColorSpace(for: frame.pixelBuffer) {
+                options[.colorSpace] = sourceColorSpace
+            }
+            return CIImage(cvPixelBuffer: frame.pixelBuffer, options: options)
+
+        case .rec709:
+            let rawImage = CIImage(
+                cvPixelBuffer: frame.pixelBuffer,
+                options: [
+                    .applyCleanAperture: true,
+                    .colorSpace: NSNull()
+                ]
+            )
+
+            guard let cube = lutProcessor.cube(for: frame.profile),
+                  let filter = CIFilter(name: "CIColorCube") else {
+                return rawImage
+            }
+
+            filter.setValue(rawImage, forKey: kCIInputImageKey)
+            filter.setValue(cube.dimension, forKey: "inputCubeDimension")
+            filter.setValue(cube.data, forKey: "inputCubeData")
+            return filter.outputImage?.cropped(to: rawImage.extent) ?? rawImage
+        }
     }
 
     private func sourceColorSpace(for pixelBuffer: CVPixelBuffer) -> CGColorSpace? {
