@@ -153,17 +153,20 @@ private struct CameraScreen: View {
         case shutterSpeed
         case iso
         case whiteBalance
+        case focus
     }
 
     private enum VideoQuickAdjustment {
         case whiteBalance
         case exposure
+        case focus
     }
 
     @ObservedObject var cameraManager: CameraManager
     @State private var showsControlMenu = false
     @State private var showsExposurePanel = false
     @State private var showsWhiteBalancePanel = false
+    @State private var showsFocusPanel = false
     @State private var showsPhotoExposureBiasPanel = false
     @State private var activePhotoProAdjustment: PhotoProAdjustment?
     @State private var previewControlRotationDegrees: Double = 0
@@ -212,6 +215,7 @@ private struct CameraScreen: View {
         .onChange(of: cameraManager.captureMode) { _, _ in
             showsExposurePanel = false
             showsWhiteBalancePanel = false
+            showsFocusPanel = false
             showsPhotoExposureBiasPanel = false
             activePhotoProAdjustment = nil
         }
@@ -220,6 +224,14 @@ private struct CameraScreen: View {
                 showsPhotoExposureBiasPanel = false
             } else {
                 activePhotoProAdjustment = nil
+            }
+        }
+        .onChange(of: cameraManager.supportsManualFocus) { _, supportsManualFocus in
+            if !supportsManualFocus {
+                showsFocusPanel = false
+                if activePhotoProAdjustment == .focus {
+                    activePhotoProAdjustment = nil
+                }
             }
         }
     }
@@ -261,6 +273,18 @@ private struct CameraScreen: View {
                             withAnimation(.easeOut(duration: 0.18)) {
                                 showsPhotoExposureBiasPanel = false
                                 activePhotoProAdjustment = activePhotoProAdjustment == .whiteBalance ? nil : .whiteBalance
+                            }
+                        }
+
+                        if cameraManager.supportsManualFocus {
+                            compactActionChip(
+                                title: "AF/MF",
+                                isSelected: activePhotoProAdjustment == .focus
+                            ) {
+                                withAnimation(.easeOut(duration: 0.18)) {
+                                    showsPhotoExposureBiasPanel = false
+                                    activePhotoProAdjustment = activePhotoProAdjustment == .focus ? nil : .focus
+                                }
                             }
                         }
                     }
@@ -545,10 +569,14 @@ private struct CameraScreen: View {
                 .font(.system(size: 11, weight: .black, design: .monospaced))
                 .tracking(0.5)
                 .foregroundStyle(AppTheme.textSecondary)
+                .lineLimit(1)
+                .fixedSize()
 
             Text(valueLabel)
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundStyle(AppTheme.textPrimary)
+                .lineLimit(1)
+                .fixedSize()
 
             DiscreteLandscapeSlider(
                 value: sliderBinding,
@@ -558,14 +586,12 @@ private struct CameraScreen: View {
             .frame(width: 272)
             .rotationEffect(.degrees(-90))
             .frame(width: 34, height: 272)
+            .fixedSize()
 
             if adjustment == .whiteBalance {
-                Button("Auto") {
-                    cameraManager.setWhiteBalanceAuto()
-                }
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(AppTheme.accent)
-                .buttonStyle(.plain)
+                photoWhiteBalanceResetButton
+            } else if adjustment == .focus {
+                photoFocusResetButton
             }
         }
         .padding(.horizontal, 8)
@@ -587,45 +613,44 @@ private struct CameraScreen: View {
         let valueLabel = photoAdjustmentValueLabel(for: adjustment)
         let sliderBinding = photoSliderBinding(for: adjustment)
         let sliderRange = 0...Double(max(photoAdjustmentStepCount(for: adjustment) - 1, 0))
+        let showsResetButton = adjustment == .whiteBalance || adjustment == .focus
 
-        return HStack(spacing: 10) {
-            DiscreteLandscapeSlider(
-                value: sliderBinding,
-                range: sliderRange,
-                step: 1
-            )
-            .frame(maxWidth: .infinity)
+        return VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                DiscreteLandscapeSlider(
+                    value: sliderBinding,
+                    range: sliderRange,
+                    step: 1
+                )
+                .frame(width: photoLandscapeSliderWidth)
 
-            VStack(alignment: .center, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 10, weight: .black, design: .monospaced))
-                    .tracking(0.4)
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .lineLimit(1)
-                    .fixedSize()
+                VStack(alignment: .center, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 10, weight: .black, design: .monospaced))
+                        .tracking(0.4)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .lineLimit(1)
+                        .fixedSize()
 
-                Text(valueLabel)
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(AppTheme.textPrimary)
-                    .lineLimit(1)
-                    .fixedSize()
-
-                if adjustment == .whiteBalance {
-                    Button("Auto") {
-                        cameraManager.setWhiteBalanceAuto()
-                    }
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(AppTheme.accent)
-                    .buttonStyle(.plain)
-                    .fixedSize()
+                    Text(valueLabel)
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .lineLimit(1)
+                        .fixedSize()
                 }
+                .rotationEffect(.degrees(previewControlRotationDegrees))
+                .frame(width: 56, height: 56)
             }
-            .rotationEffect(.degrees(previewControlRotationDegrees))
-            .frame(width: 56, height: 116)
+
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity)
-        .frame(height: 60)
+        .padding(.top, 6)
+        .frame(
+            width: photoLandscapePanelWidth,
+            height: showsResetButton ? 92 : 60,
+            alignment: .top
+        )
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(AppTheme.surfaceRaised.opacity(0.36))
@@ -634,6 +659,15 @@ private struct CameraScreen: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
         )
+        .overlay(alignment: .bottom) {
+            if adjustment == .whiteBalance {
+                photoWhiteBalanceResetButton
+                    .padding(.bottom, 8)
+            } else if adjustment == .focus {
+                photoFocusResetButton
+                    .padding(.bottom, 8)
+            }
+        }
     }
 
     private var photoExposureBiasAdjustmentPanel: some View {
@@ -680,7 +714,7 @@ private struct CameraScreen: View {
                     range: 0...Double(max(photoExposureBiasValues.count - 1, 0)),
                     step: 1
                 )
-                .frame(maxWidth: .infinity)
+                .frame(width: photoLandscapeSliderWidth)
 
                 VStack(alignment: .center, spacing: 4) {
                     Text("EV")
@@ -703,7 +737,7 @@ private struct CameraScreen: View {
             photoExposureBiasResetButton
         }
         .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity)
+        .frame(width: photoLandscapePanelWidth)
         .frame(height: 92)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -720,6 +754,7 @@ private struct CameraScreen: View {
             quickAdjustButton(title: "WB", isActive: showsWhiteBalancePanel || isWhiteBalanceAdjusted) {
                 withAnimation(.easeOut(duration: 0.18)) {
                     showsExposurePanel = false
+                    showsFocusPanel = false
                     showsWhiteBalancePanel.toggle()
                 }
             }
@@ -727,17 +762,31 @@ private struct CameraScreen: View {
             quickAdjustButton(title: "EXP", isActive: showsExposurePanel || isExposureAdjusted) {
                 withAnimation(.easeOut(duration: 0.18)) {
                     showsWhiteBalancePanel = false
+                    showsFocusPanel = false
                     showsExposurePanel.toggle()
                 }
             }
             .disabled(!cameraManager.supportsExposureBiasAdjustment)
             .opacity(cameraManager.supportsExposureBiasAdjustment ? 1 : 0.45)
 
+            quickAdjustButton(title: "F", isActive: showsFocusPanel || isFocusAdjusted) {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    showsWhiteBalancePanel = false
+                    showsExposurePanel = false
+                    showsFocusPanel.toggle()
+                }
+            }
+            .disabled(!cameraManager.supportsManualFocus)
+            .opacity(cameraManager.supportsManualFocus ? 1 : 0.45)
+
             controlsButton
         }
     }
 
     private var activeVideoQuickAdjustment: VideoQuickAdjustment? {
+        if showsFocusPanel {
+            return .focus
+        }
         if showsWhiteBalancePanel {
             return .whiteBalance
         }
@@ -754,6 +803,8 @@ private struct CameraScreen: View {
             videoVerticalExposureQuickPanel
         case .whiteBalance:
             videoVerticalWhiteBalanceQuickPanel
+        case .focus:
+            videoVerticalFocusQuickPanel
         }
     }
 
@@ -957,6 +1008,58 @@ private struct CameraScreen: View {
         )
     }
 
+    private var videoVerticalFocusQuickPanel: some View {
+        VStack(spacing: 10) {
+            Text("F")
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .tracking(0.5)
+                .foregroundStyle(AppTheme.textSecondary)
+                .rotationEffect(.degrees(previewControlRotationDegrees))
+
+            Text(focusValueLabel)
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.textPrimary)
+                .rotationEffect(.degrees(previewControlRotationDegrees))
+
+            Slider(
+                value: Binding(
+                    get: { Double(cameraManager.manualFocusPosition) },
+                    set: { cameraManager.setManualFocusPosition(Float($0)) }
+                ),
+                in: 0...1
+            )
+            .tint(AppTheme.accent)
+            .frame(width: 236)
+            .rotationEffect(.degrees(-90))
+            .frame(width: 34, height: 236)
+
+            Button {
+                cameraManager.setManualFocusEnabled(false)
+            } label: {
+                Text("A")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(isFocusAdjusted ? Color.black : AppTheme.textSecondary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 22)
+                    .metalCapsulePanel(isActive: isFocusAdjusted)
+                    .rotationEffect(.degrees(previewControlRotationDegrees))
+            }
+            .buttonStyle(.plain)
+            .disabled(!isFocusAdjusted)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 14)
+        .frame(width: 60)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.surfaceRaised.opacity(0.36))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
+        )
+    }
+
     private var lensPickerStrip: some View {
         HStack(spacing: 8) {
             ForEach(cameraManager.lensPickerOptions) { lens in
@@ -1054,6 +1157,7 @@ private struct CameraScreen: View {
         Button {
             showsExposurePanel = false
             showsWhiteBalancePanel = false
+            showsFocusPanel = false
             showsPhotoExposureBiasPanel = false
             showsControlMenu.toggle()
         } label: {
@@ -1075,8 +1179,12 @@ private struct CameraScreen: View {
         cameraManager.usesManualWhiteBalance
     }
 
+    private var isFocusAdjusted: Bool {
+        cameraManager.supportsManualFocus && cameraManager.manualFocusEnabled
+    }
+
     private var showsQuickAdjustmentPanel: Bool {
-        showsExposurePanel || showsWhiteBalancePanel
+        showsExposurePanel || showsWhiteBalancePanel || showsFocusPanel
     }
 
     private var isLandscapePreviewOrientation: Bool {
@@ -1142,6 +1250,18 @@ private struct CameraScreen: View {
         )
     }
 
+    private var photoFocusSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(photoCurrentFocusIndex)
+            },
+            set: { newValue in
+                let index = photoClampedIndex(for: newValue, count: 101)
+                cameraManager.setManualFocusPosition(Float(index) / 100)
+            }
+        )
+    }
+
     private var photoCurrentShutterIndex: Int {
         let values = cameraManager.availableShutterSpeedDenominators
         return values.firstIndex(of: cameraManager.currentShutterSpeedDenominator) ?? 0
@@ -1177,6 +1297,10 @@ private struct CameraScreen: View {
         }?.offset ?? 0
     }
 
+    private var photoCurrentFocusIndex: Int {
+        min(max(Int((Double(cameraManager.manualFocusPosition) * 100).rounded()), 0), 100)
+    }
+
     private func photoAdjustmentStepCount(for adjustment: PhotoProAdjustment) -> Int {
         switch adjustment {
         case .shutterSpeed:
@@ -1185,6 +1309,8 @@ private struct CameraScreen: View {
             return cameraManager.availableISOValues.count
         case .whiteBalance:
             return photoWhiteBalanceValues.count
+        case .focus:
+            return 101
         }
     }
 
@@ -1196,6 +1322,8 @@ private struct CameraScreen: View {
             return "ISO"
         case .whiteBalance:
             return "WB"
+        case .focus:
+            return "MF"
         }
     }
 
@@ -1207,6 +1335,8 @@ private struct CameraScreen: View {
             return cameraManager.currentISOValueLabel
         case .whiteBalance:
             return photoWhiteBalanceChipLabel
+        case .focus:
+            return photoFocusValueLabel
         }
     }
 
@@ -1218,6 +1348,8 @@ private struct CameraScreen: View {
             return photoISOSliderBinding
         case .whiteBalance:
             return photoWhiteBalanceSliderBinding
+        case .focus:
+            return photoFocusSliderBinding
         }
     }
 
@@ -1228,8 +1360,52 @@ private struct CameraScreen: View {
         return Array(stride(from: lowerBound, through: upperBound, by: 100)).map(Double.init)
     }
 
+    private var photoLandscapeSliderWidth: CGFloat {
+        236
+    }
+
+    private var photoLandscapePanelWidth: CGFloat {
+        photoLandscapeSliderWidth + 56 + 10 + 16
+    }
+
     private var photoWhiteBalanceChipLabel: String {
         cameraManager.whiteBalanceLabel
+    }
+
+    private var photoWhiteBalanceResetButton: some View {
+        Button("Auto") {
+            cameraManager.setWhiteBalanceAuto()
+        }
+        .font(.system(size: 10, weight: .bold, design: .monospaced))
+        .foregroundStyle(AppTheme.accent)
+        .buttonStyle(.plain)
+        .fixedSize()
+    }
+
+    private var photoFocusResetButton: some View {
+        Button {
+            cameraManager.setManualFocusEnabled(false)
+        } label: {
+            Text("AF")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(cameraManager.manualFocusEnabled ? AppTheme.textPrimary : Color.black)
+                .padding(.horizontal, 10)
+                .frame(minWidth: 34, minHeight: 24)
+                .metalCapsulePanel(isActive: !cameraManager.manualFocusEnabled)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Capsule())
+    }
+
+    private var focusValueLabel: String {
+        guard cameraManager.supportsManualFocus else { return "--" }
+        guard cameraManager.manualFocusEnabled else { return "A" }
+        return String(format: "%.2f", cameraManager.manualFocusPosition)
+    }
+
+    private var photoFocusValueLabel: String {
+        guard cameraManager.supportsManualFocus else { return "--" }
+        return String(format: "%.2f", cameraManager.manualFocusPosition)
     }
 
     private func photoClampedIndex(for value: Double, count: Int) -> Int {
