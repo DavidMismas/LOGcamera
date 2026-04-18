@@ -371,6 +371,10 @@ final class CameraManager: NSObject, ObservableObject {
         static let photoUsesManualWhiteBalance = "camera.photoUsesManualWhiteBalance"
         static let manualFocusEnabled = "camera.manualFocusEnabled"
         static let manualFocusPosition = "camera.manualFocusPosition"
+        static let videoManualFocusEnabled = "camera.videoManualFocusEnabled"
+        static let videoManualFocusPosition = "camera.videoManualFocusPosition"
+        static let photoManualFocusEnabled = "camera.photoManualFocusEnabled"
+        static let photoManualFocusPosition = "camera.photoManualFocusPosition"
         static let photoCompanionFormat = "camera.photoCompanionFormat"
         static let photoResolutionOption = "camera.photoResolutionOption"
         static let photoDefaultWideFocalLength = "camera.photoDefaultWideFocalLength"
@@ -403,6 +407,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var activeDevice: AVCaptureDevice?
     @Published private(set) var focusFeedback: FocusFeedback?
     @Published private(set) var isFocusExposureLocked = false
+    @Published private(set) var photoMeteringHandlesVisible = false
     @Published private(set) var canRecord = false
     @Published private(set) var canCapturePhoto = false
     @Published private(set) var colorProfile: CaptureColorProfile = .unavailable
@@ -508,6 +513,11 @@ final class CameraManager: NSObject, ObservableObject {
     }
     @Published private(set) var photoManualShutterSpeedDenominator = 125
     @Published private(set) var photoManualISO: Float = 100
+
+    private var videoManualFocusEnabledState = false
+    private var videoManualFocusPositionState: Float = 0.5
+    private var photoManualFocusEnabledState = false
+    private var photoManualFocusPositionState: Float = 0.5
 
     var exposureBiasRange: ClosedRange<Float> {
         guard let device = activeDevice else { return -2...2 }
@@ -897,6 +907,10 @@ final class CameraManager: NSObject, ObservableObject {
             }
         } else {
             proExposureEnabled = isEnabled
+            if !isEnabled {
+                setWhiteBalanceAuto()
+                setManualFocusEnabled(false)
+            }
         }
         syncExposureConfiguration()
         if captureMode == .photo {
@@ -1059,6 +1073,7 @@ final class CameraManager: NSObject, ObservableObject {
         guard !isCaptureBusy else { return }
         let nextMode: CaptureMode = captureMode == .video ? .photo : .video
         captureMode = nextMode
+        syncPublishedManualFocusState(for: nextMode)
         sessionQueue.async {
             self.stopProExposureAutomation()
             guard self.isSessionConfigured else { return }
@@ -1419,8 +1434,11 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func setManualFocusEnabled(_ isEnabled: Bool) {
+        let mode = captureMode
+        let focusPosition = storedManualFocusPosition(for: mode)
+        setStoredManualFocusEnabled(isEnabled, for: mode)
         manualFocusEnabled = isEnabled
-        UserDefaults.standard.set(manualFocusEnabled, forKey: SettingsKey.manualFocusEnabled)
+        manualFocusPosition = focusPosition
         sessionQueue.async {
             guard let device = self.videoInput?.device ?? self.activeDevice else { return }
             do {
@@ -1428,7 +1446,7 @@ final class CameraManager: NSObject, ObservableObject {
                 defer { device.unlockForConfiguration() }
 
                 if isEnabled, device.isLockingFocusWithCustomLensPositionSupported {
-                    device.setFocusModeLocked(lensPosition: self.manualFocusPosition, completionHandler: nil)
+                    device.setFocusModeLocked(lensPosition: focusPosition, completionHandler: nil)
                 } else if device.isFocusModeSupported(.continuousAutoFocus) {
                     device.focusMode = .continuousAutoFocus
                 } else if device.isFocusModeSupported(.autoFocus) {
@@ -1442,13 +1460,13 @@ final class CameraManager: NSObject, ObservableObject {
 
     func setManualFocusPosition(_ position: Float) {
         let clamped = min(max(position, 0), 1)
+        let mode = captureMode
         manualFocusPosition = clamped
         if !manualFocusEnabled {
+            setStoredManualFocusEnabled(true, for: mode)
             manualFocusEnabled = true
         }
-        let defaults = UserDefaults.standard
-        defaults.set(Double(manualFocusPosition), forKey: SettingsKey.manualFocusPosition)
-        defaults.set(manualFocusEnabled, forKey: SettingsKey.manualFocusEnabled)
+        setStoredManualFocusPosition(clamped, for: mode)
 
         sessionQueue.async {
             guard let device = self.videoInput?.device ?? self.activeDevice,
@@ -1687,6 +1705,69 @@ final class CameraManager: NSObject, ObservableObject {
     func setPhotoFocusAndExposurePoint(at point: CGPoint) {
         guard captureMode == .photo else { return }
         updatePhotoMetering(focusPoint: point, exposurePoint: point)
+    }
+
+    func setPhotoMeteringHandlesVisible(_ isVisible: Bool) {
+        if Thread.isMainThread {
+            photoMeteringHandlesVisible = isVisible
+        } else {
+            DispatchQueue.main.async {
+                self.photoMeteringHandlesVisible = isVisible
+            }
+        }
+    }
+
+    func clearPhotoMeteringSelection() {
+        setPhotoMeteringHandlesVisible(false)
+
+        sessionQueue.async {
+            self.pendingFocusLockWorkItem?.cancel()
+            guard self.captureMode == .photo,
+                  let device = self.videoInput?.device ?? self.activeDevice else {
+                DispatchQueue.main.async {
+                    self.isFocusExposureLocked = false
+                }
+                return
+            }
+
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+
+                if !self.manualFocusEnabled {
+                    if device.isFocusPointOfInterestSupported {
+                        device.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5)
+                    }
+                    if device.isFocusModeSupported(.continuousAutoFocus) {
+                        device.focusMode = .continuousAutoFocus
+                    } else if device.isFocusModeSupported(.autoFocus) {
+                        device.focusMode = .autoFocus
+                    }
+                }
+
+                if !self.isCurrentProExposureEnabled {
+                    if device.isExposurePointOfInterestSupported {
+                        device.exposurePointOfInterest = CGPoint(x: 0.5, y: 0.5)
+                    }
+                    if device.isExposureRectOfInterestSupported {
+                        device.exposureRectOfInterest = self.fullFrameAutoExposureRectOfInterest
+                    }
+                    if device.isExposureModeSupported(.continuousAutoExposure) {
+                        device.exposureMode = .continuousAutoExposure
+                    } else if device.isExposureModeSupported(.autoExpose) {
+                        device.exposureMode = .autoExpose
+                    }
+                }
+
+                device.isSubjectAreaChangeMonitoringEnabled = true
+
+                DispatchQueue.main.async {
+                    self.isFocusExposureLocked = false
+                }
+            } catch {
+                self.presentStatusMessage("Photo auto reset failed.")
+            }
+        }
     }
 
     func focusAndLock(at point: CGPoint) {
@@ -2110,10 +2191,10 @@ final class CameraManager: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 self.activeDevice = device
                 self.supportsManualFocus = device.isLockingFocusWithCustomLensPositionSupported
-                self.manualFocusPosition = device.lensPosition
                 if !device.isLockingFocusWithCustomLensPositionSupported {
-                    self.manualFocusEnabled = false
+                    self.setStoredManualFocusEnabled(false, for: self.captureMode)
                 }
+                self.syncPublishedManualFocusState(for: self.captureMode)
             }
             setupCaptureRotationCoordinator(for: device)
             return true
@@ -2274,6 +2355,8 @@ final class CameraManager: NSObject, ObservableObject {
         let targetMode = mode ?? captureMode
         let resolvedLens = resolvedLensOption(for: device, mode: targetMode, preferredLens: preferredLens)
         let targetZoomFactor = resolvedLens?.zoomFactor ?? 1.0
+        let targetManualFocusEnabled = storedManualFocusEnabled(for: targetMode)
+        let targetManualFocusPosition = storedManualFocusPosition(for: targetMode)
 
         do {
             if targetMode == .photo {
@@ -2288,13 +2371,13 @@ final class CameraManager: NSObject, ObservableObject {
                 if let photoColorSpace = preferredPhotoColorSpace(for: photoFormat) {
                     device.activeColorSpace = photoColorSpace
                 }
-                if device.isFocusModeSupported(.continuousAutoFocus) && !manualFocusEnabled {
+                if device.isFocusModeSupported(.continuousAutoFocus) && !targetManualFocusEnabled {
                     device.focusMode = .continuousAutoFocus
                 }
                 applyWhiteBalanceState(on: device, mode: targetMode)
                 applyExposureConfiguration(on: device)
-                if manualFocusEnabled && device.isLockingFocusWithCustomLensPositionSupported {
-                    device.setFocusModeLocked(lensPosition: manualFocusPosition, completionHandler: nil)
+                if targetManualFocusEnabled && device.isLockingFocusWithCustomLensPositionSupported {
+                    device.setFocusModeLocked(lensPosition: targetManualFocusPosition, completionHandler: nil)
                 }
                 device.videoZoomFactor = min(targetZoomFactor, device.activeFormat.videoMaxZoomFactor)
                 device.unlockForConfiguration()
@@ -2326,13 +2409,13 @@ final class CameraManager: NSObject, ObservableObject {
             if let colorSpace = selection.profile.colorSpace {
                 device.activeColorSpace = colorSpace
             }
-            if device.isFocusModeSupported(.continuousAutoFocus) && !manualFocusEnabled {
+            if device.isFocusModeSupported(.continuousAutoFocus) && !targetManualFocusEnabled {
                 device.focusMode = .continuousAutoFocus
             }
             applyWhiteBalanceState(on: device, mode: targetMode)
             applyExposureConfiguration(on: device)
-            if manualFocusEnabled && device.isLockingFocusWithCustomLensPositionSupported {
-                device.setFocusModeLocked(lensPosition: manualFocusPosition, completionHandler: nil)
+            if targetManualFocusEnabled && device.isLockingFocusWithCustomLensPositionSupported {
+                device.setFocusModeLocked(lensPosition: targetManualFocusPosition, completionHandler: nil)
             }
             device.videoZoomFactor = min(targetZoomFactor, device.activeFormat.videoMaxZoomFactor)
             device.unlockForConfiguration()
@@ -3030,6 +3113,8 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func prepareDeviceForRecording() {
         guard let device = videoInput?.device ?? activeDevice else { return }
+        let usesVideoManualFocus = storedManualFocusEnabled(for: .video)
+        let videoManualFocusPosition = storedManualFocusPosition(for: .video)
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
@@ -3058,8 +3143,10 @@ final class CameraManager: NSObject, ObservableObject {
                 // In auto mode keep preview exposure behavior unchanged.
             }
 
-            if manualFocusEnabled, device.isLockingFocusWithCustomLensPositionSupported {
-                device.setFocusModeLocked(lensPosition: manualFocusPosition, completionHandler: nil)
+            if usesVideoManualFocus, device.isLockingFocusWithCustomLensPositionSupported {
+                device.setFocusModeLocked(lensPosition: videoManualFocusPosition, completionHandler: nil)
+            } else if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
             }
         } catch {
             presentStatusMessage("Unable to lock camera controls for recording.")
@@ -3068,6 +3155,8 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func restoreDeviceAfterRecording() {
         guard let device = videoInput?.device ?? activeDevice else { return }
+        let usesVideoManualFocus = storedManualFocusEnabled(for: .video)
+        let videoManualFocusPosition = storedManualFocusPosition(for: .video)
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
@@ -3076,8 +3165,8 @@ final class CameraManager: NSObject, ObservableObject {
 
             applyExposureConfiguration(on: device)
 
-            if manualFocusEnabled, device.isLockingFocusWithCustomLensPositionSupported {
-                device.setFocusModeLocked(lensPosition: manualFocusPosition, completionHandler: nil)
+            if usesVideoManualFocus, device.isLockingFocusWithCustomLensPositionSupported {
+                device.setFocusModeLocked(lensPosition: videoManualFocusPosition, completionHandler: nil)
             } else if device.isFocusModeSupported(.continuousAutoFocus) {
                 device.focusMode = .continuousAutoFocus
             }
@@ -3119,6 +3208,60 @@ final class CameraManager: NSObject, ObservableObject {
             greenGain: min(max(gains.greenGain, 1.0), device.maxWhiteBalanceGain),
             blueGain: min(max(gains.blueGain, 1.0), device.maxWhiteBalanceGain)
         )
+    }
+
+    private func storedManualFocusEnabled(for mode: CaptureMode) -> Bool {
+        switch mode {
+        case .video:
+            return videoManualFocusEnabledState
+        case .photo:
+            return photoManualFocusEnabledState
+        }
+    }
+
+    private func storedManualFocusPosition(for mode: CaptureMode) -> Float {
+        switch mode {
+        case .video:
+            return videoManualFocusPositionState
+        case .photo:
+            return photoManualFocusPositionState
+        }
+    }
+
+    private func setStoredManualFocusEnabled(_ isEnabled: Bool, for mode: CaptureMode) {
+        switch mode {
+        case .video:
+            videoManualFocusEnabledState = isEnabled
+            UserDefaults.standard.set(isEnabled, forKey: SettingsKey.videoManualFocusEnabled)
+        case .photo:
+            photoManualFocusEnabledState = isEnabled
+            UserDefaults.standard.set(isEnabled, forKey: SettingsKey.photoManualFocusEnabled)
+        }
+    }
+
+    private func setStoredManualFocusPosition(_ position: Float, for mode: CaptureMode) {
+        let clamped = min(max(position, 0), 1)
+        switch mode {
+        case .video:
+            videoManualFocusPositionState = clamped
+            UserDefaults.standard.set(Double(clamped), forKey: SettingsKey.videoManualFocusPosition)
+        case .photo:
+            photoManualFocusPositionState = clamped
+            UserDefaults.standard.set(Double(clamped), forKey: SettingsKey.photoManualFocusPosition)
+        }
+    }
+
+    private func syncPublishedManualFocusState(for mode: CaptureMode) {
+        let applyState = {
+            self.manualFocusEnabled = self.storedManualFocusEnabled(for: mode)
+            self.manualFocusPosition = self.storedManualFocusPosition(for: mode)
+        }
+
+        if Thread.isMainThread {
+            applyState()
+        } else {
+            DispatchQueue.main.async(execute: applyState)
+        }
     }
 
     private func restorePersistedSettings() {
@@ -3256,13 +3399,40 @@ final class CameraManager: NSObject, ObservableObject {
             photoUsesManualWhiteBalance = defaults.bool(forKey: SettingsKey.photoUsesManualWhiteBalance)
         }
 
-        if defaults.object(forKey: SettingsKey.manualFocusEnabled) != nil {
-            manualFocusEnabled = defaults.bool(forKey: SettingsKey.manualFocusEnabled)
+        let legacyManualFocusEnabled = defaults.object(forKey: SettingsKey.manualFocusEnabled) != nil
+            ? defaults.bool(forKey: SettingsKey.manualFocusEnabled)
+            : nil
+        let legacyManualFocusPosition = defaults.object(forKey: SettingsKey.manualFocusPosition) as? Double
+
+        if defaults.object(forKey: SettingsKey.videoManualFocusEnabled) != nil {
+            videoManualFocusEnabledState = defaults.bool(forKey: SettingsKey.videoManualFocusEnabled)
+        } else {
+            videoManualFocusEnabledState = false
+            defaults.set(false, forKey: SettingsKey.videoManualFocusEnabled)
         }
 
-        if let savedManualFocusPosition = defaults.object(forKey: SettingsKey.manualFocusPosition) as? Double {
-            manualFocusPosition = Float(savedManualFocusPosition)
+        if defaults.object(forKey: SettingsKey.photoManualFocusEnabled) != nil {
+            photoManualFocusEnabledState = defaults.bool(forKey: SettingsKey.photoManualFocusEnabled)
+        } else {
+            photoManualFocusEnabledState = legacyManualFocusEnabled ?? false
+            defaults.set(photoManualFocusEnabledState, forKey: SettingsKey.photoManualFocusEnabled)
         }
+
+        if let savedVideoManualFocusPosition = defaults.object(forKey: SettingsKey.videoManualFocusPosition) as? Double {
+            videoManualFocusPositionState = Float(savedVideoManualFocusPosition)
+        } else if let legacyManualFocusPosition {
+            videoManualFocusPositionState = Float(legacyManualFocusPosition)
+            defaults.set(legacyManualFocusPosition, forKey: SettingsKey.videoManualFocusPosition)
+        }
+
+        if let savedPhotoManualFocusPosition = defaults.object(forKey: SettingsKey.photoManualFocusPosition) as? Double {
+            photoManualFocusPositionState = Float(savedPhotoManualFocusPosition)
+        } else if let legacyManualFocusPosition {
+            photoManualFocusPositionState = Float(legacyManualFocusPosition)
+            defaults.set(legacyManualFocusPosition, forKey: SettingsKey.photoManualFocusPosition)
+        }
+
+        syncPublishedManualFocusState(for: captureMode)
 
         if let savedShutterDenominator = defaults.object(forKey: SettingsKey.manualShutterSpeedDenominator) as? Int {
             manualShutterSpeedDenominator = savedShutterDenominator
@@ -3400,6 +3570,7 @@ final class CameraManager: NSObject, ObservableObject {
             if device.isLockingFocusWithCustomLensPositionSupported {
                 device.setFocusModeLocked(lensPosition: device.lensPosition, completionHandler: nil)
                 DispatchQueue.main.async {
+                    self.setStoredManualFocusPosition(device.lensPosition, for: self.captureMode)
                     self.manualFocusPosition = device.lensPosition
                 }
             } else if device.isFocusModeSupported(.locked) {

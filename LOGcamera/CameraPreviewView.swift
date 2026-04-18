@@ -23,6 +23,7 @@ struct CameraPreviewView: UIViewRepresentable {
         view.setZebraChannel(cameraManager.zebraChannel)
         view.setCaptureMode(cameraManager.captureMode)
         view.setPhotoMeteringPointsLinked(cameraManager.photoMeteringPointsLinked)
+        view.setPhotoMeteringHandlesVisible(cameraManager.photoMeteringHandlesVisible)
         view.setPreviewSuspended(isSuspended)
         view.applyConnectionConfiguration(from: cameraManager)
         view.onPhotoMeteringSelection = { [weak cameraManager] kind, capturePoint in
@@ -45,6 +46,9 @@ struct CameraPreviewView: UIViewRepresentable {
                 cameraManager.focus(at: capturePoint)
             }
         }
+        view.onPhotoMeteringHandlesVisibilityChanged = { [weak cameraManager] isVisible in
+            cameraManager?.setPhotoMeteringHandlesVisible(isVisible)
+        }
         if let device = cameraManager.activeDevice {
             view.updateActiveDevice(device)
         }
@@ -60,6 +64,7 @@ struct CameraPreviewView: UIViewRepresentable {
         uiView.setZebraChannel(cameraManager.zebraChannel)
         uiView.setCaptureMode(cameraManager.captureMode)
         uiView.setPhotoMeteringPointsLinked(cameraManager.photoMeteringPointsLinked)
+        uiView.setPhotoMeteringHandlesVisible(cameraManager.photoMeteringHandlesVisible)
         uiView.setPreviewSuspended(isSuspended)
         uiView.applyConnectionConfiguration(from: cameraManager)
         uiView.onPhotoMeteringSelection = { [weak cameraManager] kind, capturePoint in
@@ -81,6 +86,9 @@ struct CameraPreviewView: UIViewRepresentable {
             } else {
                 cameraManager.focus(at: capturePoint)
             }
+        }
+        uiView.onPhotoMeteringHandlesVisibilityChanged = { [weak cameraManager] isVisible in
+            cameraManager?.setPhotoMeteringHandlesVisible(isVisible)
         }
 
         if let device = cameraManager.activeDevice {
@@ -286,6 +294,7 @@ private final class PhotoMeteringHandleView: UIView {
 final class PreviewView: UIView {
     var onFocusSelection: ((CGPoint, CGPoint, Bool) -> Void)?
     var onPhotoMeteringSelection: ((PhotoMeteringHandleKind, CGPoint) -> Void)?
+    var onPhotoMeteringHandlesVisibilityChanged: ((Bool) -> Void)?
 
     private let previewSurface = MTKView(frame: .zero)
     private let zebraSurface = MTKView(frame: .zero)
@@ -420,6 +429,11 @@ final class PreviewView: UIView {
 
     func setPhotoMeteringPointsLinked(_ isLinked: Bool) {
         photoMeteringPointsLinked = isLinked
+    }
+
+    func setPhotoMeteringHandlesVisible(_ isVisible: Bool) {
+        guard !isVisible else { return }
+        hidePhotoMeteringHandles()
     }
 
     func setZebraEnabled(_ isEnabled: Bool) {
@@ -647,6 +661,7 @@ final class PreviewView: UIView {
     }
 
     private func showPhotoMeteringHandles(at previewPoint: CGPoint) {
+        let wasVisible = photoFocusPreviewPoint != nil || photoExposurePreviewPoint != nil
         photoFocusPreviewPoint = previewPoint
         photoExposurePreviewPoint = previewPoint
         photoFocusHandleView.isHidden = false
@@ -654,13 +669,20 @@ final class PreviewView: UIView {
         bringSubviewToFront(photoFocusHandleView)
         bringSubviewToFront(photoExposureHandleView)
         updatePhotoMeteringHandleLayout()
+        if !wasVisible {
+            onPhotoMeteringHandlesVisibilityChanged?(true)
+        }
     }
 
     private func hidePhotoMeteringHandles() {
+        let wasVisible = photoFocusPreviewPoint != nil || photoExposurePreviewPoint != nil
         photoFocusPreviewPoint = nil
         photoExposurePreviewPoint = nil
         photoFocusHandleView.isHidden = true
         photoExposureHandleView.isHidden = true
+        if wasVisible {
+            onPhotoMeteringHandlesVisibilityChanged?(false)
+        }
     }
 
     private func updatePhotoMeteringHandleLayout() {
