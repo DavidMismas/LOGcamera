@@ -275,6 +275,43 @@ enum PhotoResolutionOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum PhotoDefaultWideFocalLength: String, CaseIterable, Identifiable {
+    case mm24 = "24"
+    case mm28 = "28"
+    case mm35 = "35"
+
+    var id: String { rawValue }
+
+    var title: String {
+        "\(rawValue) mm"
+    }
+}
+
+enum VideoAudioMode: String, CaseIterable, Identifiable {
+    case mono
+    case stereo
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mono:
+            return "Mono"
+        case .stereo:
+            return "Stereo"
+        }
+    }
+
+    var multichannelAudioMode: AVCaptureMultichannelAudioMode {
+        switch self {
+        case .mono:
+            return .none
+        case .stereo:
+            return .stereo
+        }
+    }
+}
+
 enum ZebraChannel: String, CaseIterable, Identifiable {
     case red
     case green
@@ -336,12 +373,16 @@ final class CameraManager: NSObject, ObservableObject {
         static let manualFocusPosition = "camera.manualFocusPosition"
         static let photoCompanionFormat = "camera.photoCompanionFormat"
         static let photoResolutionOption = "camera.photoResolutionOption"
+        static let photoDefaultWideFocalLength = "camera.photoDefaultWideFocalLength"
         static let previewLookMode = "camera.previewLookMode"
         static let zebraEnabled = "camera.zebraEnabled"
         static let zebraThresholdPercent = "camera.zebraThresholdPercent"
         static let zebraChannel = "camera.zebraChannel"
         static let photoGridEnabled = "camera.photoGridEnabled"
+        static let photoMeteringPointsLinked = "camera.photoMeteringPointsLinked"
         static let videoGridEnabled = "camera.videoGridEnabled"
+        static let videoAudioMode = "camera.videoAudioMode"
+        static let videoWindNoiseReductionEnabled = "camera.videoWindNoiseReductionEnabled"
         static let proExposureEnabled = "camera.proExposureEnabled"
         static let proExposureMode = "camera.proExposureMode"
         static let manualShutterSpeedDenominator = "camera.manualShutterSpeedDenominator"
@@ -386,6 +427,9 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var photoResolutionOption: PhotoResolutionOption = .full {
         didSet { UserDefaults.standard.set(photoResolutionOption.rawValue, forKey: SettingsKey.photoResolutionOption) }
     }
+    @Published var photoDefaultWideFocalLength: PhotoDefaultWideFocalLength = .mm24 {
+        didSet { UserDefaults.standard.set(photoDefaultWideFocalLength.rawValue, forKey: SettingsKey.photoDefaultWideFocalLength) }
+    }
 
     @Published var captureMode: CaptureMode = .video {
         didSet { UserDefaults.standard.set(captureMode.rawValue, forKey: SettingsKey.captureMode) }
@@ -425,14 +469,29 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var photoGridEnabled = false {
         didSet { UserDefaults.standard.set(photoGridEnabled, forKey: SettingsKey.photoGridEnabled) }
     }
+    @Published var photoMeteringPointsLinked = false {
+        didSet { UserDefaults.standard.set(photoMeteringPointsLinked, forKey: SettingsKey.photoMeteringPointsLinked) }
+    }
     @Published var videoGridEnabled = false {
         didSet { UserDefaults.standard.set(videoGridEnabled, forKey: SettingsKey.videoGridEnabled) }
+    }
+    @Published var videoAudioMode: VideoAudioMode = .mono {
+        didSet { UserDefaults.standard.set(videoAudioMode.rawValue, forKey: SettingsKey.videoAudioMode) }
+    }
+    @Published var videoWindNoiseReductionEnabled = false {
+        didSet { UserDefaults.standard.set(videoWindNoiseReductionEnabled, forKey: SettingsKey.videoWindNoiseReductionEnabled) }
     }
     @Published private(set) var recordingBitrateMbps = 30.0
     @Published private(set) var usesCustomBitrate = false
     @Published private(set) var activeStabilizationMode: CaptureStabilizationMode = .off
     @Published private(set) var activeStabilizationTitle = "Off"
     @Published private(set) var supportedStabilizationModes: [CaptureStabilizationMode] = [.off]
+    @Published private(set) var audioCaptureAvailable = false
+    @Published private(set) var supportedVideoAudioModes: [VideoAudioMode] = [.mono]
+    @Published private(set) var supportsWindNoiseReduction = false
+    @Published private(set) var activeVideoAudioModeTitle = "Unavailable"
+    @Published private(set) var preferredMicrophoneModeTitle = "Standard"
+    @Published private(set) var activeMicrophoneModeTitle = "Standard"
     @Published var proExposureEnabled = false {
         didSet { UserDefaults.standard.set(proExposureEnabled, forKey: SettingsKey.proExposureEnabled) }
     }
@@ -506,6 +565,38 @@ final class CameraManager: NSObject, ObservableObject {
         let clampedValues = commonValues.filter { isoRange.contains($0) }
         let combined = Set(clampedValues + [isoRange.lowerBound, manualISO, isoRange.upperBound])
         return combined.sorted()
+    }
+
+    var canEnableVideoWindNoiseReduction: Bool {
+        audioCaptureAvailable && supportsWindNoiseReduction && videoAudioMode != .mono
+    }
+
+    var videoAudioSettingsSummary: String {
+        guard audioCaptureAvailable else {
+            return "Microphone input is unavailable, so LOGcamera falls back to the system route without in-app audio controls."
+        }
+
+        if supportedVideoAudioModes.contains(.stereo) {
+            return "Stereo uses the built-in mic array. If an external microphone is routed in, iOS ignores this channel layout setting."
+        }
+
+        return "The current microphone route only exposes mono capture to the app. External microphones keep their own channel layout."
+    }
+
+    var videoWindNoiseReductionSummary: String {
+        guard audioCaptureAvailable else {
+            return "Wind reduction needs an available microphone input."
+        }
+
+        guard supportsWindNoiseReduction else {
+            return "Wind reduction is unavailable on the current microphone route."
+        }
+
+        guard videoAudioMode != .mono else {
+            return "Wind reduction becomes available when Stereo is selected."
+        }
+
+        return "Wind reduction only affects supported built-in microphone capture."
     }
 
     var currentShutterSpeedLabel: String {
@@ -672,6 +763,7 @@ final class CameraManager: NSObject, ObservableObject {
     private let autoExposureSettleMaximumDuration: TimeInterval = 0.75
     private let autoExposureSettleOffsetThreshold: Float = 0.12
     private let fullFrameAutoExposureRectOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
+    private let photoExposureSpotSize: CGFloat = 0.18
 
     private var isSessionConfigured = false
     private var videoInput: AVCaptureDeviceInput?
@@ -701,6 +793,7 @@ final class CameraManager: NSObject, ObservableObject {
     private let previewFrameSubject = PassthroughSubject<PreviewFrame, Never>()
     private var proExposureAutomationTimer: DispatchSourceTimer?
     private var activePhotoProcessors: [Int64: PhotoCaptureProcessor] = [:]
+    private var audioRouteChangeObserver: NSObjectProtocol?
 
     var previewFramePublisher: AnyPublisher<PreviewFrame, Never> {
         previewFrameSubject.eraseToAnyPublisher()
@@ -710,12 +803,22 @@ final class CameraManager: NSObject, ObservableObject {
         super.init()
         restorePersistedSettings()
         purgeTemporaryCaptureFiles()
+        refreshMicrophoneModeStatus()
+        observeAudioRouteChanges()
         checkPermissions()
+    }
+
+    deinit {
+        if let audioRouteChangeObserver {
+            NotificationCenter.default.removeObserver(audioRouteChangeObserver)
+        }
     }
 
     func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .active:
+            refreshMicrophoneModeStatus()
+            refreshAudioInputConfiguration()
             startSession()
         case .inactive, .background:
             stopSession()
@@ -763,8 +866,27 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    func selectPhotoDefaultWideFocalLength(_ focalLength: PhotoDefaultWideFocalLength) {
+        photoDefaultWideFocalLength = focalLength
+    }
+
     func selectPreviewLookMode(_ mode: PreviewLookMode) {
         previewLookMode = mode
+    }
+
+    func selectVideoAudioMode(_ mode: VideoAudioMode) {
+        videoAudioMode = mode
+        refreshAudioInputConfiguration()
+    }
+
+    func setVideoWindNoiseReductionEnabled(_ isEnabled: Bool) {
+        videoWindNoiseReductionEnabled = isEnabled
+        refreshAudioInputConfiguration()
+    }
+
+    func openSystemMicrophoneModes() {
+        AVCaptureDevice.showSystemUserInterface(.microphoneModes)
+        refreshMicrophoneModeStatus()
     }
 
     func setProExposureEnabled(_ isEnabled: Bool) {
@@ -941,20 +1063,28 @@ final class CameraManager: NSObject, ObservableObject {
             self.stopProExposureAutomation()
             guard self.isSessionConfigured else { return }
             let currentDevice = self.videoInput?.device ?? self.activeDevice
+            let preferredLens = nextMode == .video
+                ? self.defaultVideoLensOption(from: self.lensOptions)
+                : nil
+            let targetDevice = preferredLens.flatMap { self.deviceRegistry[$0.id] } ?? currentDevice
             self.session.beginConfiguration()
             self.session.sessionPreset = nextMode == .photo ? .photo : .inputPriority
             if let currentInput = self.videoInput {
                 self.session.removeInput(currentInput)
                 self.videoInput = nil
             }
-            if let currentDevice {
-                guard self.installVideoInput(device: currentDevice) else {
+            if let targetDevice {
+                guard self.installVideoInput(device: targetDevice) else {
                     self.presentStatusMessage("Failed to reconfigure camera for \(nextMode.title.lowercased()) mode.")
                     self.session.commitConfiguration()
                     return
                 }
             }
-            self.configureDeviceForCurrentSelection(inConfiguration: true)
+            self.configureDeviceForCurrentSelection(
+                mode: nextMode,
+                inConfiguration: true,
+                preferredLens: preferredLens
+            )
             self.session.commitConfiguration()
             self.configureOutput()
         }
@@ -1225,6 +1355,14 @@ final class CameraManager: NSObject, ObservableObject {
             // do not trigger abrupt jumps when they cross a custom ROI boundary.
             device.exposureRectOfInterest = fullFrameAutoExposureRectOfInterest
         }
+    }
+
+    private func photoExposureRectOfInterest(centeredAt point: CGPoint) -> CGRect {
+        let size = min(max(photoExposureSpotSize, 0.05), 1)
+        let halfSize = size / 2
+        let originX = min(max(point.x - halfSize, 0), 1 - size)
+        let originY = min(max(point.y - halfSize, 0), 1 - size)
+        return CGRect(x: originX, y: originY, width: size, height: size)
     }
 
     func setWhiteBalanceTemperature(_ value: Double) {
@@ -1536,6 +1674,21 @@ final class CameraManager: NSObject, ObservableObject {
         updateFocus(at: point, shouldLockAfterFocus: false)
     }
 
+    func setPhotoFocusPoint(at point: CGPoint) {
+        guard captureMode == .photo else { return }
+        updatePhotoMetering(focusPoint: point, exposurePoint: nil)
+    }
+
+    func setPhotoExposurePoint(at point: CGPoint) {
+        guard captureMode == .photo else { return }
+        updatePhotoMetering(focusPoint: nil, exposurePoint: point)
+    }
+
+    func setPhotoFocusAndExposurePoint(at point: CGPoint) {
+        guard captureMode == .photo else { return }
+        updatePhotoMetering(focusPoint: point, exposurePoint: point)
+    }
+
     func focusAndLock(at point: CGPoint) {
         guard !manualFocusEnabled else { return }
         updateFocus(at: point, shouldLockAfterFocus: true)
@@ -1609,6 +1762,17 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    private func observeAudioRouteChanges() {
+        audioRouteChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.refreshMicrophoneModeStatus()
+            self?.refreshAudioInputConfiguration()
+        }
+    }
+
     private func setupSessionIfNeeded() {
         guard !isSessionConfigured else { return }
         sessionQueue.async {
@@ -1620,7 +1784,7 @@ final class CameraManager: NSObject, ObservableObject {
 
             let options = self.discoverLenses()
 
-            guard let defaultLens = Self.defaultLensOption(from: options),
+            guard let defaultLens = self.defaultLensOption(from: options, for: self.captureMode),
                   let device = self.deviceRegistry[defaultLens.id],
                   self.installVideoInput(device: device) else {
                 self.presentStatusMessage("No compatible camera lenses found.")
@@ -1904,10 +2068,34 @@ final class CameraManager: NSObject, ObservableObject {
         Int((Double(baseFocalLength) * multiplier).rounded())
     }
 
-    private static func defaultLensOption(from options: [LensOption]) -> LensOption? {
-        options.first(where: { $0.deviceType == .builtInWideAngleCamera && $0.position == .back && abs($0.zoomFactor - 1.0) < 0.01 }) ??
-        options.first(where: { $0.position == .back }) ??
-        options.first
+    private func defaultLensOption(from options: [LensOption], for mode: CaptureMode) -> LensOption? {
+        switch mode {
+        case .photo:
+            return preferredPhotoDefaultWideLensOption(from: options) ??
+                defaultVideoLensOption(from: options) ??
+                options.first(where: { $0.position == .back }) ??
+                options.first
+        case .video:
+            return defaultVideoLensOption(from: options) ??
+                options.first(where: { $0.position == .back }) ??
+                options.first
+        }
+    }
+
+    private func defaultVideoLensOption(from options: [LensOption]) -> LensOption? {
+        options.first(where: {
+            $0.deviceType == .builtInWideAngleCamera &&
+            $0.position == .back &&
+            abs($0.zoomFactor - 1.0) < 0.01
+        })
+    }
+
+    private func preferredPhotoDefaultWideLensOption(from options: [LensOption]) -> LensOption? {
+        options.first {
+            $0.deviceType == .builtInWideAngleCamera &&
+            $0.position == .back &&
+            $0.displayName == photoDefaultWideFocalLength.rawValue
+        }
     }
 
     private func installVideoInput(device: AVCaptureDevice) -> Bool {
@@ -1935,14 +2123,24 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func installAudioInputIfPossible() {
-        guard audioInput == nil,
-              let device = AVCaptureDevice.default(for: .audio) else { return }
+        guard audioInput == nil else {
+            refreshAudioInputConfiguration()
+            return
+        }
+
+        guard let device = AVCaptureDevice.default(for: .audio) else {
+            publishAudioInputStatus(input: nil, activeMode: nil)
+            return
+        }
+
         do {
             let input = try AVCaptureDeviceInput(device: device)
             guard session.canAddInput(input) else { return }
             session.addInput(input)
             audioInput = input
+            configureAudioInput(input)
         } catch {
+            publishAudioInputStatus(input: nil, activeMode: nil)
             presentStatusMessage("Audio input unavailable.")
         }
     }
@@ -1990,6 +2188,76 @@ final class CameraManager: NSObject, ObservableObject {
         ]
     }
 
+    private func refreshAudioInputConfiguration() {
+        sessionQueue.async {
+            guard let audioInput = self.audioInput else {
+                self.publishAudioInputStatus(input: nil, activeMode: nil)
+                return
+            }
+
+            self.configureAudioInput(audioInput)
+        }
+    }
+
+    private func configureAudioInput(_ input: AVCaptureDeviceInput) {
+        let supportedModes = supportedVideoAudioModes(for: input)
+        let appliedMode = supportedModes.contains(videoAudioMode) ? videoAudioMode : .mono
+
+        input.multichannelAudioMode = appliedMode.multichannelAudioMode
+        input.isWindNoiseRemovalEnabled = input.isWindNoiseRemovalSupported &&
+            appliedMode != .mono &&
+            videoWindNoiseReductionEnabled
+
+        publishAudioInputStatus(input: input, activeMode: appliedMode)
+    }
+
+    private func supportedVideoAudioModes(for input: AVCaptureDeviceInput) -> [VideoAudioMode] {
+        var modes: [VideoAudioMode] = [.mono]
+
+        if input.isMultichannelAudioModeSupported(.stereo) {
+            modes.append(.stereo)
+        }
+
+        return modes
+    }
+
+    private func publishAudioInputStatus(input: AVCaptureDeviceInput?, activeMode: VideoAudioMode?) {
+        let audioCaptureAvailable = input != nil
+        let supportedModes = input.map(supportedVideoAudioModes(for:)) ?? [.mono]
+        let supportsWindNoiseReduction = input?.isWindNoiseRemovalSupported ?? false
+        let activeModeTitle = activeMode?.title ?? "Unavailable"
+
+        DispatchQueue.main.async {
+            self.audioCaptureAvailable = audioCaptureAvailable
+            self.supportedVideoAudioModes = supportedModes
+            self.supportsWindNoiseReduction = supportsWindNoiseReduction
+            self.activeVideoAudioModeTitle = activeModeTitle
+        }
+    }
+
+    private func refreshMicrophoneModeStatus() {
+        let preferredTitle = Self.microphoneModeTitle(for: AVCaptureDevice.preferredMicrophoneMode)
+        let activeTitle = Self.microphoneModeTitle(for: AVCaptureDevice.activeMicrophoneMode)
+
+        DispatchQueue.main.async {
+            self.preferredMicrophoneModeTitle = preferredTitle
+            self.activeMicrophoneModeTitle = activeTitle
+        }
+    }
+
+    private static func microphoneModeTitle(for mode: AVCaptureDevice.MicrophoneMode) -> String {
+        switch mode {
+        case .standard:
+            return "Standard"
+        case .wideSpectrum:
+            return "Wide Spectrum"
+        case .voiceIsolation:
+            return "Voice Isolation"
+        @unknown default:
+            return "Unknown"
+        }
+    }
+
     private func reconfigureActiveLens() {
         sessionQueue.async {
             self.session.beginConfiguration()
@@ -2004,7 +2272,7 @@ final class CameraManager: NSObject, ObservableObject {
                                                     preferredLens: LensOption? = nil) {
         guard let device = videoInput?.device ?? activeDevice else { return }
         let targetMode = mode ?? captureMode
-        let resolvedLens = resolvedLensOption(for: device, preferredLens: preferredLens)
+        let resolvedLens = resolvedLensOption(for: device, mode: targetMode, preferredLens: preferredLens)
         let targetZoomFactor = resolvedLens?.zoomFactor ?? 1.0
 
         do {
@@ -2103,7 +2371,9 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func resolvedLensOption(for device: AVCaptureDevice, preferredLens: LensOption? = nil) -> LensOption? {
+    private func resolvedLensOption(for device: AVCaptureDevice,
+                                    mode: CaptureMode,
+                                    preferredLens: LensOption? = nil) -> LensOption? {
         if let preferredLens, preferredLens.deviceUniqueID == device.uniqueID {
             return preferredLens
         }
@@ -2113,7 +2383,10 @@ final class CameraManager: NSObject, ObservableObject {
             return activeLens
         }
 
-        return Self.defaultLensOption(from: lensOptions.filter { $0.deviceUniqueID == device.uniqueID })
+        return defaultLensOption(
+            from: lensOptions.filter { $0.deviceUniqueID == device.uniqueID },
+            for: mode
+        )
     }
 
     private func selectBestPhotoFormat(for device: AVCaptureDevice) -> AVCaptureDevice.Format? {
@@ -2898,8 +3171,21 @@ final class CameraManager: NSObject, ObservableObject {
             photoGridEnabled = defaults.bool(forKey: SettingsKey.photoGridEnabled)
         }
 
+        if defaults.object(forKey: SettingsKey.photoMeteringPointsLinked) != nil {
+            photoMeteringPointsLinked = defaults.bool(forKey: SettingsKey.photoMeteringPointsLinked)
+        }
+
         if defaults.object(forKey: SettingsKey.videoGridEnabled) != nil {
             videoGridEnabled = defaults.bool(forKey: SettingsKey.videoGridEnabled)
+        }
+
+        if let rawVideoAudioMode = defaults.string(forKey: SettingsKey.videoAudioMode),
+           let videoAudioMode = VideoAudioMode(rawValue: rawVideoAudioMode) {
+            self.videoAudioMode = videoAudioMode
+        }
+
+        if defaults.object(forKey: SettingsKey.videoWindNoiseReductionEnabled) != nil {
+            videoWindNoiseReductionEnabled = defaults.bool(forKey: SettingsKey.videoWindNoiseReductionEnabled)
         }
 
         if defaults.object(forKey: SettingsKey.proExposureEnabled) != nil {
@@ -2943,6 +3229,11 @@ final class CameraManager: NSObject, ObservableObject {
         if let savedPhotoResolutionOption = defaults.string(forKey: SettingsKey.photoResolutionOption),
            let resolutionOption = PhotoResolutionOption(rawValue: savedPhotoResolutionOption) {
             photoResolutionOption = resolutionOption
+        }
+
+        if let savedPhotoDefaultWideFocalLength = defaults.string(forKey: SettingsKey.photoDefaultWideFocalLength),
+           let focalLength = PhotoDefaultWideFocalLength(rawValue: savedPhotoDefaultWideFocalLength) {
+            photoDefaultWideFocalLength = focalLength
         }
 
         if let savedExposureBias = defaults.object(forKey: SettingsKey.exposureBias) as? Double {
@@ -3048,6 +3339,52 @@ final class CameraManager: NSObject, ObservableObject {
                 self.sessionQueue.asyncAfter(deadline: .now() + self.focusLockDelay, execute: lockWorkItem)
             } catch {
                 self.presentStatusMessage("Tap-to-focus failed.")
+            }
+        }
+    }
+
+    private func updatePhotoMetering(focusPoint: CGPoint?, exposurePoint: CGPoint?) {
+        sessionQueue.async {
+            self.pendingFocusLockWorkItem?.cancel()
+            guard self.captureMode == .photo,
+                  let device = self.videoInput?.device ?? self.activeDevice else { return }
+
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+
+                if let focusPoint,
+                   !self.manualFocusEnabled,
+                   device.isFocusPointOfInterestSupported {
+                    device.focusPointOfInterest = focusPoint
+                    if device.isFocusModeSupported(.continuousAutoFocus) {
+                        device.focusMode = .continuousAutoFocus
+                    } else if device.isFocusModeSupported(.autoFocus) {
+                        device.focusMode = .autoFocus
+                    }
+                }
+
+                if let exposurePoint,
+                   !self.isCurrentProExposureEnabled,
+                   device.isExposurePointOfInterestSupported {
+                    device.exposurePointOfInterest = exposurePoint
+                    if device.isExposureRectOfInterestSupported {
+                        device.exposureRectOfInterest = self.photoExposureRectOfInterest(centeredAt: exposurePoint)
+                    }
+                    if device.isExposureModeSupported(.continuousAutoExposure) {
+                        device.exposureMode = .continuousAutoExposure
+                    } else if device.isExposureModeSupported(.autoExpose) {
+                        device.exposureMode = .autoExpose
+                    }
+                }
+
+                device.isSubjectAreaChangeMonitoringEnabled = true
+
+                DispatchQueue.main.async {
+                    self.isFocusExposureLocked = false
+                }
+            } catch {
+                self.presentStatusMessage("Photo metering update failed.")
             }
         }
     }

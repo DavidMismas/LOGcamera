@@ -3,6 +3,12 @@ import AVFoundation
 import Combine
 import MetalKit
 
+enum PhotoMeteringHandleKind {
+    case focus
+    case exposure
+    case both
+}
+
 struct CameraPreviewView: UIViewRepresentable {
     @ObservedObject var cameraManager: CameraManager
     let isSuspended: Bool
@@ -16,8 +22,20 @@ struct CameraPreviewView: UIViewRepresentable {
         view.setZebraThreshold(cameraManager.zebraThreshold)
         view.setZebraChannel(cameraManager.zebraChannel)
         view.setCaptureMode(cameraManager.captureMode)
+        view.setPhotoMeteringPointsLinked(cameraManager.photoMeteringPointsLinked)
         view.setPreviewSuspended(isSuspended)
         view.applyConnectionConfiguration(from: cameraManager)
+        view.onPhotoMeteringSelection = { [weak cameraManager] kind, capturePoint in
+            guard let cameraManager else { return }
+            switch kind {
+            case .focus:
+                cameraManager.setPhotoFocusPoint(at: capturePoint)
+            case .exposure:
+                cameraManager.setPhotoExposurePoint(at: capturePoint)
+            case .both:
+                cameraManager.setPhotoFocusAndExposurePoint(at: capturePoint)
+            }
+        }
         view.onFocusSelection = { [weak cameraManager] capturePoint, previewPoint, shouldLock in
             guard let cameraManager else { return }
             cameraManager.showFocusFeedback(at: previewPoint, isLocked: shouldLock)
@@ -41,8 +59,20 @@ struct CameraPreviewView: UIViewRepresentable {
         uiView.setZebraThreshold(cameraManager.zebraThreshold)
         uiView.setZebraChannel(cameraManager.zebraChannel)
         uiView.setCaptureMode(cameraManager.captureMode)
+        uiView.setPhotoMeteringPointsLinked(cameraManager.photoMeteringPointsLinked)
         uiView.setPreviewSuspended(isSuspended)
         uiView.applyConnectionConfiguration(from: cameraManager)
+        uiView.onPhotoMeteringSelection = { [weak cameraManager] kind, capturePoint in
+            guard let cameraManager else { return }
+            switch kind {
+            case .focus:
+                cameraManager.setPhotoFocusPoint(at: capturePoint)
+            case .exposure:
+                cameraManager.setPhotoExposurePoint(at: capturePoint)
+            case .both:
+                cameraManager.setPhotoFocusAndExposurePoint(at: capturePoint)
+            }
+        }
         uiView.onFocusSelection = { [weak cameraManager] capturePoint, previewPoint, shouldLock in
             guard let cameraManager else { return }
             cameraManager.showFocusFeedback(at: previewPoint, isLocked: shouldLock)
@@ -59,12 +89,209 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 }
 
+private final class PhotoMeteringHandleView: UIView {
+    enum Style {
+        case focus
+        case exposure
+
+        var size: CGSize {
+            switch self {
+            case .focus:
+                return CGSize(width: 76, height: 76)
+            case .exposure:
+                return CGSize(width: 52, height: 52)
+            }
+        }
+    }
+
+    private let style: Style
+    private let outerRingLayer = CAShapeLayer()
+    private let innerRingLayer = CAShapeLayer()
+    private let detailLayer = CAShapeLayer()
+    private let centerDotLayer = CAShapeLayer()
+    private let badgeLabel = UILabel()
+
+    init(style: Style) {
+        self.style = style
+        super.init(frame: CGRect(origin: .zero, size: style.size))
+        backgroundColor = .clear
+        isOpaque = false
+        isHidden = true
+
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.32
+        layer.shadowOffset = .zero
+        switch style {
+        case .focus:
+            layer.shadowRadius = 10
+        case .exposure:
+            layer.shadowRadius = 8
+        }
+
+        [outerRingLayer, innerRingLayer, detailLayer, centerDotLayer].forEach {
+            layer.addSublayer($0)
+        }
+
+        outerRingLayer.lineWidth = 2
+        innerRingLayer.lineWidth = 1.5
+        detailLayer.lineWidth = 2
+        detailLayer.lineCap = .round
+        centerDotLayer.strokeColor = nil
+
+        badgeLabel.font = .monospacedSystemFont(ofSize: 10, weight: .bold)
+        badgeLabel.textAlignment = .center
+        badgeLabel.backgroundColor = UIColor.black.withAlphaComponent(0.68)
+        badgeLabel.layer.cornerRadius = 8
+        badgeLabel.layer.masksToBounds = true
+        badgeLabel.layer.borderWidth = 1
+        badgeLabel.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
+        addSubview(badgeLabel)
+
+        updateAppearance()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let contentsScale = window?.windowScene?.screen.scale ?? traitCollection.displayScale
+        [outerRingLayer, innerRingLayer, detailLayer, centerDotLayer].forEach {
+            $0.contentsScale = contentsScale
+        }
+        layer.shadowPath = UIBezierPath(ovalIn: bounds.insetBy(dx: 2, dy: 2)).cgPath
+        updatePaths()
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let distance = hypot(point.x - center.x, point.y - center.y)
+
+        switch style {
+        case .focus:
+            return distance >= focusRadius - 28 && distance <= focusRadius + 28
+        case .exposure:
+            return distance <= exposureRadius + 22
+        }
+    }
+
+    private var focusRadius: CGFloat {
+        min(bounds.width, bounds.height) * 0.5 - 10
+    }
+
+    private var exposureRadius: CGFloat {
+        min(bounds.width, bounds.height) * 0.5 - 6
+    }
+
+    private func updateAppearance() {
+        switch style {
+        case .focus:
+            let accent = UIColor.systemYellow.withAlphaComponent(0.95)
+            outerRingLayer.strokeColor = accent.cgColor
+            outerRingLayer.fillColor = UIColor.black.withAlphaComponent(0.14).cgColor
+            innerRingLayer.isHidden = true
+            detailLayer.strokeColor = accent.cgColor
+            centerDotLayer.fillColor = accent.cgColor
+            badgeLabel.text = "AF"
+            badgeLabel.textColor = accent
+        case .exposure:
+            let accent = UIColor.white.withAlphaComponent(0.96)
+            outerRingLayer.strokeColor = accent.cgColor
+            outerRingLayer.fillColor = UIColor.black.withAlphaComponent(0.22).cgColor
+            innerRingLayer.strokeColor = UIColor.white.withAlphaComponent(0.34).cgColor
+            innerRingLayer.fillColor = UIColor.clear.cgColor
+            innerRingLayer.isHidden = false
+            detailLayer.strokeColor = accent.cgColor
+            centerDotLayer.fillColor = accent.cgColor
+            badgeLabel.text = "EV"
+            badgeLabel.textColor = accent
+        }
+    }
+
+    private func updatePaths() {
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+
+        switch style {
+        case .focus:
+            let radius = focusRadius
+            outerRingLayer.path = UIBezierPath(
+                ovalIn: CGRect(
+                    x: center.x - radius,
+                    y: center.y - radius,
+                    width: radius * 2,
+                    height: radius * 2
+                )
+            ).cgPath
+
+            let tickPath = UIBezierPath()
+            let tickLength: CGFloat = 8
+            let tickInset: CGFloat = 6
+
+            tickPath.move(to: CGPoint(x: center.x, y: center.y - radius + tickInset))
+            tickPath.addLine(to: CGPoint(x: center.x, y: center.y - radius + tickInset + tickLength))
+
+            tickPath.move(to: CGPoint(x: center.x + radius - tickInset, y: center.y))
+            tickPath.addLine(to: CGPoint(x: center.x + radius - tickInset - tickLength, y: center.y))
+
+            tickPath.move(to: CGPoint(x: center.x, y: center.y + radius - tickInset))
+            tickPath.addLine(to: CGPoint(x: center.x, y: center.y + radius - tickInset - tickLength))
+
+            tickPath.move(to: CGPoint(x: center.x - radius + tickInset, y: center.y))
+            tickPath.addLine(to: CGPoint(x: center.x - radius + tickInset + tickLength, y: center.y))
+
+            detailLayer.path = tickPath.cgPath
+            innerRingLayer.path = nil
+            centerDotLayer.path = UIBezierPath(
+                ovalIn: CGRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6)
+            ).cgPath
+            badgeLabel.frame = CGRect(x: center.x - 15, y: bounds.minY + 2, width: 30, height: 16)
+
+        case .exposure:
+            let outerRadius = exposureRadius
+            let innerRadius = max(outerRadius - 10, 8)
+
+            outerRingLayer.path = UIBezierPath(
+                ovalIn: CGRect(
+                    x: center.x - outerRadius,
+                    y: center.y - outerRadius,
+                    width: outerRadius * 2,
+                    height: outerRadius * 2
+                )
+            ).cgPath
+            innerRingLayer.path = UIBezierPath(
+                ovalIn: CGRect(
+                    x: center.x - innerRadius,
+                    y: center.y - innerRadius,
+                    width: innerRadius * 2,
+                    height: innerRadius * 2
+                )
+            ).cgPath
+
+            let detailPath = UIBezierPath()
+            detailPath.move(to: CGPoint(x: center.x - 7, y: center.y))
+            detailPath.addLine(to: CGPoint(x: center.x + 7, y: center.y))
+            detailPath.move(to: CGPoint(x: center.x, y: center.y - 7))
+            detailPath.addLine(to: CGPoint(x: center.x, y: center.y + 7))
+
+            detailLayer.path = detailPath.cgPath
+            centerDotLayer.path = UIBezierPath(
+                ovalIn: CGRect(x: center.x - 2.5, y: center.y - 2.5, width: 5, height: 5)
+            ).cgPath
+            badgeLabel.frame = CGRect(x: center.x - 15, y: bounds.maxY - 18, width: 30, height: 16)
+        }
+    }
+}
+
 final class PreviewView: UIView {
     var onFocusSelection: ((CGPoint, CGPoint, Bool) -> Void)?
+    var onPhotoMeteringSelection: ((PhotoMeteringHandleKind, CGPoint) -> Void)?
 
     private let previewSurface = MTKView(frame: .zero)
     private let zebraSurface = MTKView(frame: .zero)
     private let conversionPreviewLayer = AVCaptureVideoPreviewLayer()
+    private let photoFocusHandleView = PhotoMeteringHandleView(style: .focus)
+    private let photoExposureHandleView = PhotoMeteringHandleView(style: .exposure)
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var previewRotationObservation: NSKeyValueObservation?
     private var activeDevice: AVCaptureDevice?
@@ -77,6 +304,9 @@ final class PreviewView: UIView {
     private var currentCaptureMode: CaptureMode = .video
     private var isPreviewSuspended = false
     private var isZebraEnabled = false
+    private var photoMeteringPointsLinked = false
+    private var photoFocusPreviewPoint: CGPoint?
+    private var photoExposurePreviewPoint: CGPoint?
 
     private lazy var tapGestureRecognizer = UITapGestureRecognizer(
         target: self,
@@ -92,6 +322,16 @@ final class PreviewView: UIView {
         return recognizer
     }()
 
+    private lazy var photoFocusPanGestureRecognizer = UIPanGestureRecognizer(
+        target: self,
+        action: #selector(handlePhotoFocusPan(_:))
+    )
+
+    private lazy var photoExposurePanGestureRecognizer = UIPanGestureRecognizer(
+        target: self,
+        action: #selector(handlePhotoExposurePan(_:))
+    )
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         clipsToBounds = true
@@ -99,6 +339,7 @@ final class PreviewView: UIView {
         setupPreviewSurface()
         setupZebraSurface()
         setupConversionLayer()
+        setupPhotoMeteringHandles()
         setupGestures()
     }
 
@@ -109,6 +350,7 @@ final class PreviewView: UIView {
         setupPreviewSurface()
         setupZebraSurface()
         setupConversionLayer()
+        setupPhotoMeteringHandles()
         setupGestures()
     }
 
@@ -116,6 +358,7 @@ final class PreviewView: UIView {
         super.layoutSubviews()
         conversionPreviewLayer.frame = bounds
         updatePreviewSurfaceLayout()
+        updatePhotoMeteringHandleLayout()
     }
 
     override func didMoveToWindow() {
@@ -169,7 +412,14 @@ final class PreviewView: UIView {
     func setCaptureMode(_ mode: CaptureMode) {
         guard currentCaptureMode != mode else { return }
         currentCaptureMode = mode
+        if mode != .photo {
+            hidePhotoMeteringHandles()
+        }
         updateVisiblePreviewMode()
+    }
+
+    func setPhotoMeteringPointsLinked(_ isLinked: Bool) {
+        photoMeteringPointsLinked = isLinked
     }
 
     func setZebraEnabled(_ isEnabled: Bool) {
@@ -234,6 +484,13 @@ final class PreviewView: UIView {
         layer.insertSublayer(conversionPreviewLayer, at: 0)
     }
 
+    private func setupPhotoMeteringHandles() {
+        photoFocusHandleView.addGestureRecognizer(photoFocusPanGestureRecognizer)
+        photoExposureHandleView.addGestureRecognizer(photoExposurePanGestureRecognizer)
+        addSubview(photoFocusHandleView)
+        addSubview(photoExposureHandleView)
+    }
+
     private func setupGestures() {
         isUserInteractionEnabled = true
         tapGestureRecognizer.require(toFail: longPressGestureRecognizer)
@@ -289,25 +546,56 @@ final class PreviewView: UIView {
     }
 
     private func previewPoint(from gesture: UIGestureRecognizer) -> CGPoint {
+        previewPoint(fromLayerPoint: gesture.location(in: self))
+    }
+
+    private func previewPoint(fromLayerPoint point: CGPoint) -> CGPoint {
         guard bounds.width > 0, bounds.height > 0 else {
             return CGPoint(x: 0.5, y: 0.5)
         }
 
-        let location = gesture.location(in: self)
         return CGPoint(
-            x: min(max(location.x / bounds.width, 0), 1),
-            y: min(max(location.y / bounds.height, 0), 1)
+            x: min(max(point.x / bounds.width, 0), 1),
+            y: min(max(point.y / bounds.height, 0), 1)
         )
+    }
+
+    private func layerPoint(from previewPoint: CGPoint) -> CGPoint {
+        CGPoint(x: previewPoint.x * bounds.width, y: previewPoint.y * bounds.height)
+    }
+
+    private func capturePoint(fromLayerPoint point: CGPoint) -> CGPoint {
+        conversionPreviewLayer.captureDevicePointConverted(fromLayerPoint: point)
     }
 
     @objc private func handleTapToFocus(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended else { return }
+        if currentCaptureMode == .photo {
+            let location = gesture.location(in: self)
+            let previewPoint = previewPoint(fromLayerPoint: location)
+            showPhotoMeteringHandles(at: previewPoint)
+            onPhotoMeteringSelection?(.both, capturePoint(fromLayerPoint: location))
+            return
+        }
         onFocusSelection?(capturePoint(from: gesture), previewPoint(from: gesture), false)
     }
 
     @objc private func handleLongPressToLock(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
+        if currentCaptureMode == .photo {
+            showPhotoMeteringHandles(at: previewPoint(from: gesture))
+        }
         onFocusSelection?(capturePoint(from: gesture), previewPoint(from: gesture), true)
+    }
+
+    @objc private func handlePhotoFocusPan(_ gesture: UIPanGestureRecognizer) {
+        guard currentCaptureMode == .photo else { return }
+        handlePhotoMeteringPan(gesture, kind: .focus)
+    }
+
+    @objc private func handlePhotoExposurePan(_ gesture: UIPanGestureRecognizer) {
+        guard currentCaptureMode == .photo else { return }
+        handlePhotoMeteringPan(gesture, kind: .exposure)
     }
 
     private func updatePreviewSurfaceLayout() {
@@ -352,6 +640,72 @@ final class PreviewView: UIView {
         if isZebraEnabled {
             bringSubviewToFront(zebraSurface)
         }
+        if currentCaptureMode == .photo {
+            bringSubviewToFront(photoFocusHandleView)
+            bringSubviewToFront(photoExposureHandleView)
+        }
+    }
+
+    private func showPhotoMeteringHandles(at previewPoint: CGPoint) {
+        photoFocusPreviewPoint = previewPoint
+        photoExposurePreviewPoint = previewPoint
+        photoFocusHandleView.isHidden = false
+        photoExposureHandleView.isHidden = false
+        bringSubviewToFront(photoFocusHandleView)
+        bringSubviewToFront(photoExposureHandleView)
+        updatePhotoMeteringHandleLayout()
+    }
+
+    private func hidePhotoMeteringHandles() {
+        photoFocusPreviewPoint = nil
+        photoExposurePreviewPoint = nil
+        photoFocusHandleView.isHidden = true
+        photoExposureHandleView.isHidden = true
+    }
+
+    private func updatePhotoMeteringHandleLayout() {
+        updatePhotoMeteringHandleLayout(
+            handleView: photoFocusHandleView,
+            previewPoint: photoFocusPreviewPoint
+        )
+        updatePhotoMeteringHandleLayout(
+            handleView: photoExposureHandleView,
+            previewPoint: photoExposurePreviewPoint
+        )
+    }
+
+    private func updatePhotoMeteringHandleLayout(handleView: UIView,
+                                                 previewPoint: CGPoint?) {
+        guard currentCaptureMode == .photo,
+              let previewPoint else {
+            handleView.isHidden = true
+            return
+        }
+
+        handleView.center = layerPoint(from: previewPoint)
+        handleView.isHidden = false
+    }
+
+    private func handlePhotoMeteringPan(_ gesture: UIPanGestureRecognizer,
+                                        kind: PhotoMeteringHandleKind) {
+        let location = gesture.location(in: self)
+        let normalizedPreviewPoint = previewPoint(fromLayerPoint: location)
+        let effectiveKind: PhotoMeteringHandleKind = photoMeteringPointsLinked ? .both : kind
+
+        switch effectiveKind {
+        case .focus:
+            photoFocusPreviewPoint = normalizedPreviewPoint
+        case .exposure:
+            photoExposurePreviewPoint = normalizedPreviewPoint
+        case .both:
+            photoFocusPreviewPoint = normalizedPreviewPoint
+            photoExposurePreviewPoint = normalizedPreviewPoint
+        }
+
+        updatePhotoMeteringHandleLayout()
+
+        guard gesture.state == .began || gesture.state == .changed || gesture.state == .ended else { return }
+        onPhotoMeteringSelection?(effectiveKind, capturePoint(fromLayerPoint: layerPoint(from: normalizedPreviewPoint)))
     }
 
     func applyConnectionConfiguration(from cameraManager: CameraManager) {

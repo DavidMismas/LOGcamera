@@ -1558,6 +1558,12 @@ private struct CameraSettingsView: View {
     private var photoSection: some View {
         settingsCard(title: "Photo") {
             VStack(alignment: .leading, spacing: 14) {
+                settingsSubsection(title: "Default Lens") {
+                    photoDefaultLensOptions
+                }
+
+                settingsDivider()
+
                 settingsSubsection(title: "Format") {
                     photoCaptureOptions
                 }
@@ -1570,10 +1576,33 @@ private struct CameraSettingsView: View {
 
                 settingsDivider()
 
+                settingsSubsection(title: "Metering") {
+                    photoMeteringOptions
+                }
+
+                settingsDivider()
+
                 settingsSubsection(title: "Composition") {
                     photoCompositionOptions
                 }
             }
+        }
+    }
+
+    private var photoDefaultLensOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ForEach(PhotoDefaultWideFocalLength.allCases) { focalLength in
+                    selectionButton(
+                        title: focalLength.title,
+                        isSelected: cameraManager.photoDefaultWideFocalLength == focalLength
+                    ) {
+                        cameraManager.selectPhotoDefaultWideFocalLength(focalLength)
+                    }
+                }
+            }
+
+            settingsSupportingText("Chooses the startup focal length for the main wide lens. If the selected crop is unavailable on the current device, LOGcamera falls back to 24 mm.")
         }
     }
 
@@ -1643,6 +1672,28 @@ private struct CameraSettingsView: View {
         }
     }
 
+    private var photoMeteringOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                selectionButton(
+                    title: "Separate",
+                    isSelected: !cameraManager.photoMeteringPointsLinked
+                ) {
+                    cameraManager.photoMeteringPointsLinked = false
+                }
+
+                selectionButton(
+                    title: "Linked",
+                    isSelected: cameraManager.photoMeteringPointsLinked
+                ) {
+                    cameraManager.photoMeteringPointsLinked = true
+                }
+            }
+
+            settingsSupportingText("Separate keeps AF and EV draggable on their own. Linked keeps both markers together while dragging either one.")
+        }
+    }
+
     private var videoSection: some View {
         settingsCard(title: "Video") {
             VStack(alignment: .leading, spacing: 14) {
@@ -1666,6 +1717,12 @@ private struct CameraSettingsView: View {
 
                 settingsSubsection(title: "Bitrate") {
                     bitrateOptions
+                }
+
+                settingsDivider()
+
+                settingsSubsection(title: "Audio") {
+                    videoAudioOptions
                 }
 
                 settingsDivider()
@@ -1818,6 +1875,71 @@ private struct CameraSettingsView: View {
         }
     }
 
+    private var videoAudioOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ForEach(VideoAudioMode.allCases) { mode in
+                    selectionButton(
+                        title: mode.title,
+                        isSelected: cameraManager.videoAudioMode == mode
+                    ) {
+                        cameraManager.selectVideoAudioMode(mode)
+                    }
+                    .disabled(!cameraManager.audioCaptureAvailable || (mode == .stereo && !cameraManager.supportedVideoAudioModes.contains(.stereo)))
+                    .opacity((cameraManager.audioCaptureAvailable && (mode == .mono || cameraManager.supportedVideoAudioModes.contains(.stereo))) ? 1 : 0.45)
+                }
+            }
+
+            HStack {
+                Text("Active Capture")
+                    .foregroundStyle(.white.opacity(0.7))
+                Spacer()
+                Text(cameraManager.activeVideoAudioModeTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(cameraManager.activeVideoAudioModeTitle == "Unavailable" ? .white.opacity(0.7) : AppTheme.accent)
+            }
+            .font(.system(size: 12, weight: .medium))
+
+            HStack(spacing: 8) {
+                selectionButton(
+                    title: "Wind Off",
+                    isSelected: !cameraManager.videoWindNoiseReductionEnabled
+                ) {
+                    cameraManager.setVideoWindNoiseReductionEnabled(false)
+                }
+
+                selectionButton(
+                    title: "Wind On",
+                    isSelected: cameraManager.videoWindNoiseReductionEnabled
+                ) {
+                    cameraManager.setVideoWindNoiseReductionEnabled(true)
+                }
+            }
+            .disabled(!cameraManager.canEnableVideoWindNoiseReduction)
+            .opacity(cameraManager.canEnableVideoWindNoiseReduction ? 1 : 0.45)
+
+            settingsActionButton(
+                title: "Mic Modes...",
+                detail: cameraManager.activeMicrophoneModeTitle
+            ) {
+                cameraManager.openSystemMicrophoneModes()
+            }
+
+            HStack {
+                Text("Preferred")
+                    .foregroundStyle(.white.opacity(0.7))
+                Spacer()
+                Text(cameraManager.preferredMicrophoneModeTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
+            }
+            .font(.system(size: 12, weight: .medium))
+
+            settingsSupportingText(cameraManager.videoAudioSettingsSummary)
+            settingsSupportingText(cameraManager.videoWindNoiseReductionSummary)
+        }
+    }
+
     private func settingsCard<Content: View>(title: String,
                                              @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1904,6 +2026,33 @@ private struct CameraSettingsView: View {
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity)
                 .metalRoundedPanel(cornerRadius: 12, isActive: isOn)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func settingsActionButton(title: String,
+                                      detail: String,
+                                      action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Text(title)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.textPrimary)
+
+                Spacer(minLength: 0)
+
+                Text(detail)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
+                    .lineLimit(1)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(AppTheme.textSecondary)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .metalRoundedPanel(cornerRadius: 12)
         }
         .buttonStyle(.plain)
     }
