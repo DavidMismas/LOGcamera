@@ -22,7 +22,7 @@ struct CameraPreviewView: UIViewRepresentable {
         view.setZebraThreshold(cameraManager.zebraThreshold)
         view.setZebraChannel(cameraManager.zebraChannel)
         view.setCaptureMode(cameraManager.captureMode)
-        view.setPhotoMeteringPointsLinked(cameraManager.photoMeteringPointsLinked)
+        view.setPhotoMeteringPointsLinked(cameraManager.effectivePhotoMeteringPointsLinked)
         view.setPhotoMeteringHandlesVisible(cameraManager.photoMeteringHandlesVisible)
         view.setPreviewSuspended(isSuspended)
         view.applyConnectionConfiguration(from: cameraManager)
@@ -63,7 +63,7 @@ struct CameraPreviewView: UIViewRepresentable {
         uiView.setZebraThreshold(cameraManager.zebraThreshold)
         uiView.setZebraChannel(cameraManager.zebraChannel)
         uiView.setCaptureMode(cameraManager.captureMode)
-        uiView.setPhotoMeteringPointsLinked(cameraManager.photoMeteringPointsLinked)
+        uiView.setPhotoMeteringPointsLinked(cameraManager.effectivePhotoMeteringPointsLinked)
         uiView.setPhotoMeteringHandlesVisible(cameraManager.photoMeteringHandlesVisible)
         uiView.setPreviewSuspended(isSuspended)
         uiView.applyConnectionConfiguration(from: cameraManager)
@@ -428,7 +428,15 @@ final class PreviewView: UIView {
     }
 
     func setPhotoMeteringPointsLinked(_ isLinked: Bool) {
+        guard photoMeteringPointsLinked != isLinked else { return }
         photoMeteringPointsLinked = isLinked
+        guard isLinked else { return }
+
+        if let linkedPoint = photoFocusPreviewPoint ?? photoExposurePreviewPoint {
+            photoFocusPreviewPoint = linkedPoint
+            photoExposurePreviewPoint = linkedPoint
+            updatePhotoMeteringHandleLayout()
+        }
     }
 
     func setPhotoMeteringHandlesVisible(_ isVisible: Bool) {

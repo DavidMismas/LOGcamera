@@ -639,6 +639,10 @@ final class CameraManager: NSObject, ObservableObject {
         captureMode == .photo ? photoProExposureEnabled : proExposureEnabled
     }
 
+    var effectivePhotoMeteringPointsLinked: Bool {
+        photoProExposureEnabled || photoMeteringPointsLinked
+    }
+
     var currentShutterSpeedDenominator: Int {
         switch captureMode {
         case .video:
@@ -789,6 +793,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var focusFeedbackDismissWorkItem: DispatchWorkItem?
     private var pendingFocusLockWorkItem: DispatchWorkItem?
     private var statusMessageDismissWorkItem: DispatchWorkItem?
+    private var lastAutoControlReadbackTimestamp: TimeInterval = 0
     private var recordingTimer: Timer?
     private let writerQueue = DispatchQueue(label: "com.logcamera.writerQueue")
     private var assetWriter: AVAssetWriter?
@@ -996,6 +1001,7 @@ final class CameraManager: NSObject, ObservableObject {
                 try device.lockForConfiguration()
                 self.applyWhiteBalanceState(on: device, mode: mode)
                 device.unlockForConfiguration()
+                self.syncAutoControlReadback(from: device, mode: mode)
             } catch {
                 self.presentStatusMessage("White balance update failed.")
             }
@@ -1416,6 +1422,7 @@ final class CameraManager: NSObject, ObservableObject {
                 try device.lockForConfiguration()
                 self.applyWhiteBalanceState(on: device, mode: mode)
                 device.unlockForConfiguration()
+                self.syncAutoControlReadback(from: device, mode: mode)
             } catch {
                 self.presentStatusMessage("White balance update failed.")
             }
@@ -1440,6 +1447,7 @@ final class CameraManager: NSObject, ObservableObject {
                 try device.lockForConfiguration()
                 self.applyWhiteBalanceState(on: device, mode: mode)
                 device.unlockForConfiguration()
+                self.syncAutoControlReadback(from: device, mode: mode)
             } catch {
                 self.presentStatusMessage("White balance update failed.")
             }
@@ -1451,7 +1459,9 @@ final class CameraManager: NSObject, ObservableObject {
         let focusPosition = storedManualFocusPosition(for: mode)
         setStoredManualFocusEnabled(isEnabled, for: mode)
         manualFocusEnabled = isEnabled
-        manualFocusPosition = focusPosition
+        manualFocusPosition = isEnabled
+            ? focusPosition
+            : (videoInput?.device ?? activeDevice)?.lensPosition ?? manualFocusPosition
         sessionQueue.async {
             guard let device = self.videoInput?.device ?? self.activeDevice else { return }
             do {
@@ -1464,6 +1474,10 @@ final class CameraManager: NSObject, ObservableObject {
                     device.focusMode = .continuousAutoFocus
                 } else if device.isFocusModeSupported(.autoFocus) {
                     device.focusMode = .autoFocus
+                }
+
+                if !isEnabled {
+                    self.syncAutoControlReadback(from: device, mode: mode)
                 }
             } catch {
                 self.presentStatusMessage("Focus mode update failed.")
@@ -3688,6 +3702,48 @@ final class CameraManager: NSObject, ObservableObject {
         )
     }
 
+    private func syncAutoControlReadbackIfNeeded() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastAutoControlReadbackTimestamp >= 0.12 else { return }
+        lastAutoControlReadbackTimestamp = now
+        syncAutoControlReadback()
+    }
+
+    private func syncAutoControlReadback(from device: AVCaptureDevice? = nil, mode: CaptureMode? = nil) {
+        guard let device = device ?? (videoInput?.device ?? activeDevice) else { return }
+        let targetMode = mode ?? captureMode
+        let shouldReadWhiteBalance = !usesManualWhiteBalance(for: targetMode)
+        let shouldReadFocus = !storedManualFocusEnabled(for: targetMode)
+
+        guard shouldReadWhiteBalance || shouldReadFocus else { return }
+
+        let currentWhiteBalanceTemperature = shouldReadWhiteBalance
+            ? Double(device.temperatureAndTintValues(for: device.deviceWhiteBalanceGains).temperature)
+            : nil
+        let currentLensPosition = shouldReadFocus ? device.lensPosition : nil
+
+        DispatchQueue.main.async {
+            if let currentWhiteBalanceTemperature {
+                switch targetMode {
+                case .video:
+                    if !self.videoUsesManualWhiteBalance {
+                        self.videoWhiteBalanceTemperature = currentWhiteBalanceTemperature
+                    }
+                case .photo:
+                    if !self.photoUsesManualWhiteBalance {
+                        self.photoWhiteBalanceTemperature = currentWhiteBalanceTemperature
+                    }
+                }
+            }
+
+            if let currentLensPosition,
+               self.captureMode == targetMode,
+               !self.manualFocusEnabled {
+                self.manualFocusPosition = currentLensPosition
+            }
+        }
+    }
+
     private func previewYCbCrMatrix(for pixelBuffer: CVPixelBuffer) -> PreviewYCbCrMatrix {
         guard let attachment = CVBufferCopyAttachment(
             pixelBuffer,
@@ -3721,6 +3777,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
                                    from connection: AVCaptureConnection) {
         if output === self.videoDataOutput {
             self.publishPreviewFrame(from: sampleBuffer)
+            self.syncAutoControlReadbackIfNeeded()
             self.appendVideoSampleBuffer(sampleBuffer)
         } else if output === self.audioDataOutput {
             self.appendAudioSampleBuffer(sampleBuffer)

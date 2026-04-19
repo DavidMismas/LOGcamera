@@ -142,7 +142,6 @@ private struct RuleOfThirdsGridOverlay: View {
                 }
             }
             .stroke(Color.white.opacity(0.34), lineWidth: 1)
-            .shadow(color: Color.black.opacity(0.28), radius: 0, x: 0, y: 0)
         }
         .allowsHitTesting(false)
     }
@@ -167,7 +166,7 @@ private struct CameraScreen: View {
     @State private var showsExposurePanel = false
     @State private var showsWhiteBalancePanel = false
     @State private var showsFocusPanel = false
-    @State private var showsPhotoExposureBiasPanel = false
+    @State private var showsPhotoExposureBiasPanel = true
     @State private var activePhotoProAdjustment: PhotoProAdjustment?
     @State private var previewControlRotationDegrees: Double = 0
 
@@ -183,23 +182,33 @@ private struct CameraScreen: View {
             .ignoresSafeArea()
             .blendMode(.screen)
 
-            VStack(spacing: 0) {
-                topControlStrip
-                    .offset(y: -5)
-                if cameraManager.captureMode == .photo {
-                    Spacer(minLength: 0)
-                    previewSurface
-                    photoBottomBar
-                        .padding(.top, 14)
-                        .padding(.horizontal, 14)
-                } else {
-                    previewSurface
-                    Spacer(minLength: 0)
+            GeometryReader { proxy in
+                VStack(spacing: 0) {
+                    topControlStrip
+                        .offset(y: -5)
+                    if cameraManager.captureMode == .photo {
+                        previewSurface(width: proxy.size.width, forceFullWidth: true)
+                            .padding(.top, 18)
+                        photoAdjustmentDock
+                            .padding(.top, 14)
+                        Spacer(minLength: 0)
+                        photoBottomBar
+                            .offset(y: 10)
+                            .padding(.horizontal, 14)
+                    } else {
+                        previewSurface(width: proxy.size.width, forceFullWidth: false)
+                        Spacer(minLength: 0)
+                    }
                 }
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+                .ignoresSafeArea(edges: .horizontal)
             }
-            .ignoresSafeArea(edges: .horizontal)
         }
-        .fullScreenCover(isPresented: $showsControlMenu) {
+        .fullScreenCover(isPresented: $showsControlMenu, onDismiss: {
+            guard cameraManager.captureMode == .photo,
+                  !cameraManager.photoProExposureEnabled else { return }
+            showsPhotoExposureBiasPanel = true
+        }) {
             CameraSettingsView(cameraManager: cameraManager)
         }
         .onAppear {
@@ -216,14 +225,18 @@ private struct CameraScreen: View {
             showsExposurePanel = false
             showsWhiteBalancePanel = false
             showsFocusPanel = false
-            showsPhotoExposureBiasPanel = false
+            showsPhotoExposureBiasPanel = cameraManager.captureMode == .photo
             activePhotoProAdjustment = nil
         }
         .onChange(of: cameraManager.photoProExposureEnabled) { _, isEnabled in
-            if isEnabled {
-                showsPhotoExposureBiasPanel = false
-            } else {
-                activePhotoProAdjustment = nil
+            withAnimation(.easeOut(duration: 0.18)) {
+                if isEnabled {
+                    showsPhotoExposureBiasPanel = false
+                    activePhotoProAdjustment = .iso
+                } else {
+                    showsPhotoExposureBiasPanel = true
+                    activePhotoProAdjustment = nil
+                }
             }
         }
         .onChange(of: cameraManager.proExposureEnabled) { _, isEnabled in
@@ -250,7 +263,7 @@ private struct CameraScreen: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .bottom, spacing: 8) {
                 if cameraManager.captureMode == .photo {
-                    compactControlChip(title: "PRO", isSelected: cameraManager.photoProExposureEnabled) {
+                    compactControlChip(title: "M", isSelected: cameraManager.photoProExposureEnabled) {
                         showsPhotoExposureBiasPanel = false
                         cameraManager.setProExposureEnabled(!cameraManager.photoProExposureEnabled)
                     }
@@ -353,10 +366,14 @@ private struct CameraScreen: View {
         .padding(.bottom, 2)
     }
 
-    private var previewSurface: some View {
+    private func previewSurface(width: CGFloat, forceFullWidth: Bool) -> some View {
         CameraPreviewView(cameraManager: cameraManager, isSuspended: showsControlMenu)
-            .aspectRatio(cameraManager.previewAspectRatio, contentMode: .fit)
+            .frame(
+                width: forceFullWidth ? width : nil,
+                height: forceFullWidth ? (width / cameraManager.previewAspectRatio) : nil
+            )
             .frame(maxWidth: .infinity)
+            .aspectRatio(cameraManager.previewAspectRatio, contentMode: forceFullWidth ? .fill : .fit)
             .background(Color.black)
             .overlay {
                 if shouldShowCompositionGrid {
@@ -387,27 +404,6 @@ private struct CameraScreen: View {
                     photoMeteringResetButton
                         .padding(14)
                         .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .topLeading)))
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if cameraManager.captureMode == .photo,
-                   !isLandscapePreviewOrientation,
-                   let activePhotoProAdjustment,
-                   cameraManager.photoProExposureEnabled {
-                    photoProAdjustmentPanel(for: activePhotoProAdjustment)
-                        .padding(.top, 76)
-                        .padding(.trailing, 14)
-                        .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .topTrailing)))
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if cameraManager.captureMode == .photo,
-                   !isLandscapePreviewOrientation,
-                   showsPhotoExposureBiasPanel {
-                    photoExposureBiasAdjustmentPanel
-                        .padding(.top, 76)
-                        .padding(.trailing, 14)
-                        .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .topTrailing)))
                 }
             }
             .overlay(alignment: .bottom) {
@@ -523,7 +519,7 @@ private struct CameraScreen: View {
     }
 
     private var photoPreviewOverlay: some View {
-        VStack(spacing: isLandscapePreviewOrientation ? 5 : 10) {
+        VStack(spacing: 10) {
             if let statusMessage = photoPreviewStatusMessage {
                 Text(statusMessage)
                     .font(.system(size: 13, weight: .medium))
@@ -531,21 +527,6 @@ private struct CameraScreen: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
                     .metalRoundedPanel(cornerRadius: 16)
-            }
-
-            if isLandscapePreviewOrientation,
-               cameraManager.photoProExposureEnabled || showsPhotoExposureBiasPanel {
-                HStack {
-                    Spacer(minLength: 0)
-                    if cameraManager.photoProExposureEnabled,
-                       let activePhotoProAdjustment {
-                        photoLandscapeAdjustmentPanel(for: activePhotoProAdjustment)
-                    } else if showsPhotoExposureBiasPanel {
-                        photoLandscapeExposureBiasAdjustmentPanel
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottomTrailing)))
             }
 
             lensPickerStrip
@@ -564,209 +545,152 @@ private struct CameraScreen: View {
     }
 
     private var photoBottomBar: some View {
-        ZStack(alignment: .center) {
+        HStack(spacing: 0) {
             HStack {
                 captureModeSwitchButton
-                Spacer()
-                VStack(spacing: 8) {
-                    photoExposureBiasButton
-                    controlsButton
-                        .frame(width: 62, height: 62)
-                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 10)
 
             recordButton
+
+            HStack {
+                controlsButton
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, 10)
         }
         .frame(maxWidth: .infinity, minHeight: 118, alignment: .center)
     }
 
-    @ViewBuilder
-    private func photoProAdjustmentPanel(for adjustment: PhotoProAdjustment) -> some View {
-        let title = photoAdjustmentTitle(for: adjustment)
-        let valueLabel = photoAdjustmentValueLabel(for: adjustment)
-        let sliderBinding = photoSliderBinding(for: adjustment)
-        let sliderRange = 0...Double(max(photoAdjustmentStepCount(for: adjustment) - 1, 0))
-
-        VStack(spacing: 10) {
-            Text(title)
-                .font(.system(size: 11, weight: .black, design: .monospaced))
-                .tracking(0.5)
-                .foregroundStyle(AppTheme.textSecondary)
-                .lineLimit(1)
-                .fixedSize()
-
-            Text(valueLabel)
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .foregroundStyle(AppTheme.textPrimary)
-                .lineLimit(1)
-                .fixedSize()
-
-            DiscreteLandscapeSlider(
-                value: sliderBinding,
-                range: sliderRange,
-                step: 1
-            )
-            .frame(width: 272)
-            .rotationEffect(.degrees(-90))
-            .frame(width: 34, height: 272)
-            .fixedSize()
-
-            if adjustment == .whiteBalance {
-                photoWhiteBalanceResetButton
-            } else if adjustment == .focus {
-                photoFocusResetButton
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 14)
-        .frame(width: 60)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(AppTheme.surfaceRaised.opacity(0.36))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
-        )
-        .rotationEffect(.degrees(previewControlRotationDegrees))
+    private var photoAdjustmentHeaderRowHeight: CGFloat {
+        14
     }
 
-    private func photoLandscapeAdjustmentPanel(for adjustment: PhotoProAdjustment) -> some View {
-        let title = photoAdjustmentTitle(for: adjustment)
-        let valueLabel = photoAdjustmentValueLabel(for: adjustment)
-        let sliderBinding = photoSliderBinding(for: adjustment)
-        let sliderRange = 0...Double(max(photoAdjustmentStepCount(for: adjustment) - 1, 0))
-        let showsResetButton = adjustment == .whiteBalance || adjustment == .focus
-        let resetSlotWidth: CGFloat = 40
-        let resetSpacing: CGFloat = 10
-        let showsResetOnTrailingEdge = previewControlRotationDegrees == -90
-        let sliderWidth = photoLandscapeSliderWidth + (showsResetButton ? 0 : resetSlotWidth + resetSpacing)
-
-        return HStack(spacing: 10) {
-            if showsResetButton && !showsResetOnTrailingEdge {
-                photoLandscapeResetControl(for: adjustment)
-                    .frame(width: resetSlotWidth, height: 56)
-            }
-
-            DiscreteLandscapeSlider(
-                value: sliderBinding,
-                range: sliderRange,
-                step: 1
-            )
-            .frame(width: sliderWidth)
-
-            VStack(alignment: .center, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 10, weight: .black, design: .monospaced))
-                    .tracking(0.4)
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .lineLimit(1)
-                    .fixedSize()
-
-                Text(valueLabel)
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(AppTheme.textPrimary)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            .rotationEffect(.degrees(previewControlRotationDegrees))
-            .frame(width: 56, height: 56)
-
-            if showsResetButton && showsResetOnTrailingEdge {
-                photoLandscapeResetControl(for: adjustment)
-                    .frame(width: resetSlotWidth, height: 56)
+    private var photoAdjustmentDock: some View {
+        ZStack {
+            if cameraManager.photoProExposureEnabled,
+               let activePhotoProAdjustment {
+                photoProAdjustmentPanel(for: activePhotoProAdjustment)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            } else if showsPhotoExposureBiasPanel && !cameraManager.photoProExposureEnabled {
+                photoExposureBiasAdjustmentPanel
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
             }
         }
-        .padding(.horizontal, 8)
-        .frame(width: photoLandscapePanelWidth + resetSlotWidth + resetSpacing)
-        .frame(height: 60)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(AppTheme.surfaceRaised.opacity(0.36))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
-        )
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+
+    @ViewBuilder
+    private func photoProAdjustmentPanel(for adjustment: PhotoProAdjustment) -> some View {
+        let sliderBinding = photoSliderBinding(for: adjustment)
+        let sliderRange = 0...Double(max(photoAdjustmentStepCount(for: adjustment) - 1, 0))
+
+        switch adjustment {
+        case .whiteBalance:
+            photoAdjustmentHeaderPanel(
+                sliderBinding: sliderBinding,
+                sliderRange: sliderRange
+            ) {
+                HStack {
+                    Spacer(minLength: 0)
+                    photoWhiteBalanceResetButton
+                }
+            }
+        case .focus:
+            photoAdjustmentHeaderPanel(
+                sliderBinding: sliderBinding,
+                sliderRange: sliderRange
+            ) {
+                HStack {
+                    Spacer(minLength: 0)
+                    photoFocusResetButton
+                }
+            }
+        case .shutterSpeed, .iso:
+            photoAdjustmentPlainPanel(
+                sliderBinding: sliderBinding,
+                sliderRange: sliderRange
+            )
+        }
     }
 
     private var photoExposureBiasAdjustmentPanel: some View {
-        VStack(spacing: 10) {
-            Text("EV")
-                .font(.system(size: 11, weight: .black, design: .monospaced))
-                .tracking(0.5)
-                .foregroundStyle(AppTheme.textSecondary)
+        photoAdjustmentHeaderPanel(
+            sliderBinding: photoExposureBiasSliderBinding,
+            sliderRange: 0...Double(max(photoExposureBiasValues.count - 1, 0))
+        ) {
+            HStack(alignment: .center, spacing: 10) {
+                Text(String(format: "%+.1f EV", cameraManager.exposureBias))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(1)
 
-            Text(String(format: "%+.1f", cameraManager.exposureBias))
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .foregroundStyle(AppTheme.textPrimary)
+                Spacer(minLength: 0)
 
-            DiscreteLandscapeSlider(
-                value: photoExposureBiasSliderBinding,
-                range: 0...Double(max(photoExposureBiasValues.count - 1, 0)),
-                step: 1
-            )
-            .frame(width: 272)
-            .rotationEffect(.degrees(-90))
-            .frame(width: 34, height: 272)
-
-            photoExposureBiasResetButton
+                photoExposureBiasResetButton
+            }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 14)
-        .frame(width: 60)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(AppTheme.surfaceRaised.opacity(0.36))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
-        )
-        .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
-    private var photoLandscapeExposureBiasAdjustmentPanel: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 10) {
-                DiscreteLandscapeSlider(
-                    value: photoExposureBiasSliderBinding,
-                    range: 0...Double(max(photoExposureBiasValues.count - 1, 0)),
-                    step: 1
+    private func photoAdjustmentPlainPanel(
+        sliderBinding: Binding<Double>,
+        sliderRange: ClosedRange<Double>
+    ) -> some View {
+        photoAdjustmentPanelContainer {
+            VStack(alignment: .leading, spacing: 0) {
+                Color.clear
+                    .frame(height: photoAdjustmentHeaderRowHeight)
+
+                photoAdjustmentSliderTrack(
+                    sliderBinding: sliderBinding,
+                    sliderRange: sliderRange
                 )
-                .frame(width: photoLandscapeSliderWidth)
-
-                VStack(alignment: .center, spacing: 4) {
-                    Text("EV")
-                        .font(.system(size: 10, weight: .black, design: .monospaced))
-                        .tracking(0.4)
-                        .foregroundStyle(AppTheme.textSecondary)
-                        .lineLimit(1)
-                        .fixedSize()
-
-                    Text(String(format: "%+.1f", cameraManager.exposureBias))
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundStyle(AppTheme.textPrimary)
-                        .lineLimit(1)
-                        .fixedSize()
-                }
-                .rotationEffect(.degrees(previewControlRotationDegrees))
-                .frame(width: 56, height: 116)
+                .padding(.top, 2)
             }
-
-            photoExposureBiasResetButton
         }
-        .padding(.horizontal, 8)
-        .frame(width: photoLandscapePanelWidth)
-        .frame(height: 92)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(AppTheme.surfaceRaised.opacity(0.36))
+    }
+
+    private func photoAdjustmentHeaderPanel<Header: View>(
+        sliderBinding: Binding<Double>,
+        sliderRange: ClosedRange<Double>,
+        @ViewBuilder header: () -> Header
+    ) -> some View {
+        photoAdjustmentPanelContainer {
+            VStack(alignment: .leading, spacing: 0) {
+                header()
+                    .frame(height: photoAdjustmentHeaderRowHeight)
+                    .frame(maxWidth: .infinity)
+
+                photoAdjustmentSliderTrack(
+                    sliderBinding: sliderBinding,
+                    sliderRange: sliderRange
+                )
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    private func photoAdjustmentPanelContainer<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content()
+        }
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func photoAdjustmentSliderTrack(
+        sliderBinding: Binding<Double>,
+        sliderRange: ClosedRange<Double>
+    ) -> some View {
+        DiscreteLandscapeSlider(
+            value: sliderBinding,
+            range: sliderRange,
+            step: 1
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.04), lineWidth: 0.7)
-        )
+        .frame(maxWidth: .infinity)
     }
 
     private var quickAdjustments: some View {
@@ -1161,44 +1085,69 @@ private struct CameraScreen: View {
             cameraManager.triggerPrimaryCapture()
         } label: {
             ZStack {
-                Circle()
-                    .strokeBorder(Color.white.opacity(0.94), lineWidth: 4)
-                    .frame(width: 82, height: 82)
-                    .background(
-                        Circle()
-                            .fill(AppTheme.surfaceGradient)
-                            .frame(width: 82, height: 82)
-                    )
+                if cameraManager.captureMode == .photo {
+                    ApertureOctagonShape()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.28, green: 0.29, blue: 0.33),
+                                    Color(red: 0.11, green: 0.12, blue: 0.15)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 78, height: 78)
+                        .overlay(
+                            ApertureOctagonShape()
+                                .stroke(Color.white.opacity(0.88), lineWidth: 2.6)
+                        )
+                        .overlay(
+                            ApertureOctagonShape()
+                                .stroke(Color.black.opacity(0.38), lineWidth: 1)
+                                .padding(3)
+                        )
+                        .overlay(
+                            ApertureOctagonShape()
+                                .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+                                .padding(9)
+                        )
 
-                if cameraManager.isRecording {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(AppTheme.recordLive)
-                        .frame(width: 32, height: 32)
-                } else if cameraManager.isPhotoCaptureInProgress {
-                    Circle()
-                        .fill(Color.white.opacity(0.78))
-                        .frame(width: 44, height: 44)
+                    PhotoShutterCore(isClosed: cameraManager.isPhotoCaptureInProgress)
+                        .frame(width: 52, height: 52)
+                        .scaleEffect(cameraManager.isPhotoCaptureInProgress ? 0.94 : 1)
                 } else {
                     Circle()
-                        .fill(
-                            cameraManager.captureMode == .photo
-                                ? LinearGradient(colors: [Color.white.opacity(0.98), Color.white.opacity(0.82)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                                : (cameraManager.canTriggerCapture
-                                    ? AppTheme.activeGradient
-                                    : LinearGradient(colors: [Color.gray.opacity(0.65), Color.gray.opacity(0.28)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .strokeBorder(Color.white.opacity(0.94), lineWidth: 4)
+                        .frame(width: 82, height: 82)
+                        .background(
+                            Circle()
+                                .fill(AppTheme.surfaceGradient)
+                                .frame(width: 82, height: 82)
                         )
-                        .frame(width: 58, height: 58)
+
+                    if cameraManager.isRecording {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(AppTheme.recordLive)
+                            .frame(width: 32, height: 32)
+                    } else {
+                        Circle()
+                            .fill(
+                                cameraManager.canTriggerCapture
+                                    ? AppTheme.activeGradient
+                                    : LinearGradient(colors: [Color.gray.opacity(0.65), Color.gray.opacity(0.28)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            )
+                            .frame(width: 58, height: 58)
+                    }
                 }
             }
             .offset(y: cameraManager.captureMode == .photo ? 0 : 11)
-            .frame(width: 124, height: 124)
-            .contentShape(Circle())
+            .frame(
+                width: cameraManager.captureMode == .photo ? 104 : 124,
+                height: cameraManager.captureMode == .photo ? 104 : 124
+            )
+            .contentShape(cameraManager.captureMode == .photo ? AnyShape(ApertureOctagonShape()) : AnyShape(Circle()))
         }
-        .background(
-            Circle()
-                .fill(Color.black.opacity(0.001))
-                .frame(width: 124, height: 124)
-        )
         .buttonStyle(.plain)
         .disabled(!cameraManager.canTriggerCapture)
     }
@@ -1209,13 +1158,13 @@ private struct CameraScreen: View {
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: cameraManager.captureMode == .video ? "camera.fill" : "video.fill")
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 15, weight: .bold))
                 Text(cameraManager.captureMode.switchButtonTitle)
-                    .font(.system(size: 9, weight: .black, design: .monospaced))
+                    .font(.system(size: 8, weight: .black, design: .monospaced))
                     .tracking(0.7)
             }
             .foregroundStyle(AppTheme.textPrimary)
-            .frame(width: 62, height: 62)
+            .frame(width: 54, height: 54)
             .metalCirclePanel()
         }
         .buttonStyle(.plain)
@@ -1228,13 +1177,12 @@ private struct CameraScreen: View {
             showsExposurePanel = false
             showsWhiteBalancePanel = false
             showsFocusPanel = false
-            showsPhotoExposureBiasPanel = false
             showsControlMenu.toggle()
         } label: {
             Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 22, weight: .semibold))
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(AppTheme.textPrimary)
-                .frame(width: 56, height: 56)
+                .frame(width: 52, height: 52)
                 .metalCirclePanel()
         }
         .buttonStyle(.plain)
@@ -1352,9 +1300,10 @@ private struct CameraScreen: View {
         guard !values.isEmpty else { return 0 }
 
         let currentTemperature = cameraManager.whiteBalanceTemperature
-        return values.enumerated().min { lhs, rhs in
+        let closestIndex = values.enumerated().min { lhs, rhs in
             abs(lhs.element - currentTemperature) < abs(rhs.element - currentTemperature)
         }?.offset ?? 0
+        return closestIndex
     }
 
     private var photoCurrentExposureBiasIndex: Int {
@@ -1384,32 +1333,6 @@ private struct CameraScreen: View {
         }
     }
 
-    private func photoAdjustmentTitle(for adjustment: PhotoProAdjustment) -> String {
-        switch adjustment {
-        case .shutterSpeed:
-            return "SS"
-        case .iso:
-            return "ISO"
-        case .whiteBalance:
-            return "WB"
-        case .focus:
-            return "MF"
-        }
-    }
-
-    private func photoAdjustmentValueLabel(for adjustment: PhotoProAdjustment) -> String {
-        switch adjustment {
-        case .shutterSpeed:
-            return cameraManager.currentShutterSpeedLabel
-        case .iso:
-            return cameraManager.currentISOValueLabel
-        case .whiteBalance:
-            return whiteBalanceValueLabel
-        case .focus:
-            return photoFocusValueLabel
-        }
-    }
-
     private func photoSliderBinding(for adjustment: PhotoProAdjustment) -> Binding<Double> {
         switch adjustment {
         case .shutterSpeed:
@@ -1430,14 +1353,6 @@ private struct CameraScreen: View {
         return Array(stride(from: lowerBound, through: upperBound, by: 100)).map(Double.init)
     }
 
-    private var photoLandscapeSliderWidth: CGFloat {
-        236
-    }
-
-    private var photoLandscapePanelWidth: CGFloat {
-        photoLandscapeSliderWidth + 56 + 10 + 16
-    }
-
     private var photoWhiteBalanceChipLabel: String {
         cameraManager.whiteBalanceLabel
     }
@@ -1451,10 +1366,10 @@ private struct CameraScreen: View {
             cameraManager.setWhiteBalanceAuto()
         } label: {
             Text("Auto")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.system(size: 8, weight: .bold, design: .monospaced))
                 .foregroundStyle(cameraManager.usesManualWhiteBalance ? AppTheme.textPrimary : Color.black)
-                .padding(.horizontal, 10)
-                .frame(minWidth: 40, minHeight: 24)
+                .padding(.horizontal, 5)
+                .frame(minWidth: 24, minHeight: 16)
                 .metalCapsulePanel(isActive: !cameraManager.usesManualWhiteBalance)
         }
         .buttonStyle(.plain)
@@ -1466,37 +1381,19 @@ private struct CameraScreen: View {
             cameraManager.setManualFocusEnabled(false)
         } label: {
             Text("AF")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.system(size: 8, weight: .bold, design: .monospaced))
                 .foregroundStyle(cameraManager.manualFocusEnabled ? AppTheme.textPrimary : Color.black)
-                .padding(.horizontal, 10)
-                .frame(minWidth: 34, minHeight: 24)
+                .padding(.horizontal, 5)
+                .frame(minWidth: 20, minHeight: 16)
                 .metalCapsulePanel(isActive: !cameraManager.manualFocusEnabled)
         }
         .buttonStyle(.plain)
         .contentShape(Capsule())
     }
 
-    @ViewBuilder
-    private func photoLandscapeResetControl(for adjustment: PhotoProAdjustment) -> some View {
-        Group {
-            if adjustment == .whiteBalance {
-                photoWhiteBalanceResetButton
-            } else if adjustment == .focus {
-                photoFocusResetButton
-            }
-        }
-        .rotationEffect(.degrees(previewControlRotationDegrees))
-        .fixedSize()
-    }
-
     private var focusValueLabel: String {
         guard cameraManager.supportsManualFocus else { return "--" }
         guard cameraManager.manualFocusEnabled else { return "A" }
-        return String(format: "%.2f", cameraManager.manualFocusPosition)
-    }
-
-    private var photoFocusValueLabel: String {
-        guard cameraManager.supportsManualFocus else { return "--" }
         return String(format: "%.2f", cameraManager.manualFocusPosition)
     }
 
@@ -1564,7 +1461,7 @@ private struct CameraScreen: View {
         Button {
             withAnimation(.easeOut(duration: 0.18)) {
                 activePhotoProAdjustment = nil
-                showsPhotoExposureBiasPanel.toggle()
+                showsPhotoExposureBiasPanel = true
             }
         } label: {
             Text("EV")
@@ -1589,10 +1486,10 @@ private struct CameraScreen: View {
             cameraManager.setExposureBias(0)
         } label: {
             Text("0.0")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.system(size: 8, weight: .bold, design: .monospaced))
                 .foregroundStyle(isExposureAdjusted ? Color.black : AppTheme.textSecondary)
-                .padding(.horizontal, 8)
-                .frame(height: 22)
+                .padding(.horizontal, 5)
+                .frame(minWidth: 18, minHeight: 16)
                 .metalCapsulePanel(isActive: isExposureAdjusted)
         }
         .buttonStyle(.plain)
@@ -1962,24 +1859,32 @@ private struct CameraSettingsView: View {
     }
 
     private var photoMeteringOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let forcesLinkedInPhotoPro = cameraManager.photoProExposureEnabled
+
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 selectionButton(
                     title: "Separate",
-                    isSelected: !cameraManager.photoMeteringPointsLinked
+                    isSelected: !cameraManager.effectivePhotoMeteringPointsLinked
                 ) {
                     cameraManager.photoMeteringPointsLinked = false
                 }
+                .disabled(forcesLinkedInPhotoPro)
+                .opacity(forcesLinkedInPhotoPro ? 0.45 : 1)
 
                 selectionButton(
                     title: "Linked",
-                    isSelected: cameraManager.photoMeteringPointsLinked
+                    isSelected: cameraManager.effectivePhotoMeteringPointsLinked
                 ) {
                     cameraManager.photoMeteringPointsLinked = true
                 }
             }
 
-            settingsSupportingText("Separate keeps AF and EV draggable on their own. Linked keeps both markers together while dragging either one.")
+            settingsSupportingText(
+                forcesLinkedInPhotoPro
+                ? "In Manual mode, AF and EV are always Linked so tap/drag metering does not override manual ISO or shutter speed. Outside Manual mode, your saved Separate or Linked choice is used again."
+                : "Separate keeps AF and EV draggable on their own. Linked keeps both markers together while dragging either one."
+            )
         }
     }
 
@@ -2393,8 +2298,8 @@ private struct DiscreteLandscapeSlider: View {
     let range: ClosedRange<Double>
     let step: Double
 
-    private let trackHeight: CGFloat = 5
-    private let thumbSize: CGFloat = 28
+    private let trackHeight: CGFloat = 4
+    private let thumbSize: CGFloat = 22
 
     var body: some View {
         GeometryReader { proxy in
@@ -2404,13 +2309,8 @@ private struct DiscreteLandscapeSlider: View {
 
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.white.opacity(0.26))
+                    .fill(Color.white.opacity(0.32))
                     .frame(height: trackHeight)
-                    .shadow(color: Color.black.opacity(0.22), radius: 2, y: 1)
-
-                Capsule()
-                    .fill(Color.white.opacity(0.44))
-                    .frame(width: max(xPosition, thumbSize / 2), height: trackHeight)
 
                 Circle()
                     .fill(Color.white.opacity(1.0))
@@ -2419,7 +2319,6 @@ private struct DiscreteLandscapeSlider: View {
                         Circle()
                             .stroke(Color.black.opacity(0.22), lineWidth: 0.8)
                     )
-                    .shadow(color: Color.black.opacity(0.24), radius: 4, y: 1)
                     .position(x: xPosition, y: proxy.size.height / 2)
             }
             .contentShape(Rectangle())
@@ -2430,7 +2329,7 @@ private struct DiscreteLandscapeSlider: View {
                     }
             )
         }
-        .frame(height: 34)
+        .frame(height: 24)
     }
 
     private var normalizedProgress: CGFloat {
@@ -2448,6 +2347,107 @@ private struct DiscreteLandscapeSlider: View {
         let rawValue = range.lowerBound + Double(progress) * (range.upperBound - range.lowerBound)
         let steppedValue = (rawValue / step).rounded() * step
         value = min(max(steppedValue, range.lowerBound), range.upperBound)
+    }
+}
+
+private struct PhotoShutterCore: View {
+    let isClosed: Bool
+
+    private let bladeCount = 6
+
+    var body: some View {
+        ZStack {
+            ApertureOctagonShape()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.19, green: 0.20, blue: 0.23),
+                            Color(red: 0.08, green: 0.09, blue: 0.11)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    ApertureOctagonShape()
+                        .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                )
+
+            ForEach(0..<bladeCount, id: \.self) { index in
+                ApertureBladeShape()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.95),
+                                Color(red: 0.74, green: 0.76, blue: 0.81).opacity(0.90)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay(
+                        ApertureBladeShape()
+                            .stroke(Color.black.opacity(0.18), lineWidth: 0.8)
+                    )
+                    .frame(
+                        width: isClosed ? 26 : 23,
+                        height: isClosed ? 27 : 31
+                    )
+                    .offset(y: isClosed ? -1.5 : -6.5)
+                    .rotationEffect(
+                        .degrees(Double(index) * (360.0 / Double(bladeCount)) + (isClosed ? 28 : 10))
+                    )
+            }
+
+            ApertureOctagonShape()
+                .fill(Color.black.opacity(0.76))
+                .frame(
+                    width: isClosed ? 26 : 14,
+                    height: isClosed ? 26 : 14
+                )
+                .overlay(
+                    ApertureOctagonShape()
+                        .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                )
+                .rotationEffect(.degrees(isClosed ? 22 : 0))
+        }
+        .overlay(
+            ApertureOctagonShape()
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .scaleEffect(isClosed ? 0.94 : 1)
+        .animation(.easeInOut(duration: 0.16), value: isClosed)
+    }
+}
+
+private struct ApertureBladeShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + rect.width * 0.12, y: rect.minY + rect.height * 0.18))
+        path.addLine(to: CGPoint(x: rect.maxX - rect.width * 0.04, y: rect.minY + rect.height * 0.04))
+        path.addLine(to: CGPoint(x: rect.maxX - rect.width * 0.24, y: rect.maxY - rect.height * 0.10))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.02, y: rect.maxY - rect.height * 0.28))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct ApertureOctagonShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let insetX = rect.width * 0.22
+        let insetY = rect.height * 0.22
+
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + insetX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - insetX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + insetY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - insetY))
+        path.addLine(to: CGPoint(x: rect.maxX - insetX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX + insetX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - insetY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + insetY))
+        path.closeSubpath()
+        return path
     }
 }
 
