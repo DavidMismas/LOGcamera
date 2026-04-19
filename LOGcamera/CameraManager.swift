@@ -1354,9 +1354,22 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func lockCurrentExposureForRecording(on device: AVCaptureDevice) {
-        let duration = device.exposureDuration
-        let iso = clampedISO(device.iso, for: device)
-        device.setExposureModeCustom(duration: duration, iso: iso, completionHandler: nil)
+        // Recording should inherit the preview exposure state. Re-applying a
+        // custom duration/ISO pair at record start can itself introduce a short
+        // ramp, so only freeze auto exposure when needed and otherwise keep the
+        // current custom/manual state untouched.
+        switch device.exposureMode {
+        case .custom:
+            return
+        default:
+            if device.isExposureModeSupported(.locked) {
+                device.exposureMode = .locked
+            } else {
+                let duration = device.exposureDuration
+                let iso = clampedISO(device.iso, for: device)
+                device.setExposureModeCustom(duration: duration, iso: iso, completionHandler: nil)
+            }
+        }
     }
 
     private func applyDefaultAutoExposureRegion(on device: AVCaptureDevice) {
@@ -3125,22 +3138,10 @@ final class CameraManager: NSObject, ObservableObject {
                 device.whiteBalanceMode = .locked
             }
 
-            if proExposureEnabled, proExposureMode == .shutterAngle180 {
-                // In 180 mode the preview path is already driving a custom shutter
-                // with auto-ISO assistance. At record start we only stop that ISO
-                // automation. If recording exposure lock is enabled, explicitly
-                // freeze the current duration and ISO so Pro recording keeps the
-                // exposure state selected in preview.
-                if exposureLockedDuringRecording {
-                    lockCurrentExposureForRecording(on: device)
-                }
-            } else if proExposureEnabled {
-                applyExposureConfiguration(on: device)
-            } else if exposureLockedDuringRecording {
+            if exposureLockedDuringRecording,
+               !proExposureEnabled {
                 // Preserve the preview exposure exactly when recording lock is on.
                 lockCurrentExposureForRecording(on: device)
-            } else {
-                // In auto mode keep preview exposure behavior unchanged.
             }
 
             if usesVideoManualFocus, device.isLockingFocusWithCustomLensPositionSupported {
