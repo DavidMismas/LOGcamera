@@ -365,6 +365,8 @@ final class CameraManager: NSObject, ObservableObject {
         static let recordingBitrateMbps = "camera.recordingBitrateMbps"
         static let usesCustomBitrate = "camera.usesCustomBitrate"
         static let exposureBias = "camera.exposureBias"
+        static let videoExposureBias = "camera.videoExposureBias"
+        static let photoExposureBias = "camera.photoExposureBias"
         static let videoWhiteBalanceTemperature = "camera.whiteBalanceTemperature"
         static let videoUsesManualWhiteBalance = "camera.usesManualWhiteBalance"
         static let photoWhiteBalanceTemperature = "camera.photoWhiteBalanceTemperature"
@@ -514,14 +516,20 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var photoManualShutterSpeedDenominator = 125
     @Published private(set) var photoManualISO: Float = 100
 
+    private var videoExposureBiasState: Float = 0
+    private var photoExposureBiasState: Float = 0
     private var videoManualFocusEnabledState = false
     private var videoManualFocusPositionState: Float = 0.5
     private var photoManualFocusEnabledState = false
     private var photoManualFocusPositionState: Float = 0.5
 
     var exposureBiasRange: ClosedRange<Float> {
-        guard let device = activeDevice else { return -2...2 }
-        return device.minExposureTargetBias...device.maxExposureTargetBias
+        supportedExposureBiasRange(for: activeDevice)
+    }
+
+    var videoExposureBiasRange: ClosedRange<Float> {
+        let supportedRange = exposureBiasRange
+        return max(supportedRange.lowerBound, -5)...min(supportedRange.upperBound, 5)
     }
 
     var whiteBalanceTemperatureRange: ClosedRange<Double> {
@@ -573,7 +581,7 @@ final class CameraManager: NSObject, ObservableObject {
         ]
 
         let clampedValues = commonValues.filter { isoRange.contains($0) }
-        let combined = Set(clampedValues + [isoRange.lowerBound, manualISO, isoRange.upperBound])
+        let combined = Set(clampedValues + [isoRange.lowerBound, currentManualISO(for: captureMode), isoRange.upperBound])
         return combined.sorted()
     }
 
@@ -619,6 +627,15 @@ final class CameraManager: NSObject, ObservableObject {
             return proExposureMode == .shutterAngle180 ? "Auto" : String(format: "%.0f", manualISO)
         case .photo:
             return String(format: "%.0f", photoManualISO)
+        }
+    }
+
+    private func currentManualISO(for mode: CaptureMode) -> Float {
+        switch mode {
+        case .video:
+            return manualISO
+        case .photo:
+            return photoManualISO
         }
     }
 
@@ -776,6 +793,7 @@ final class CameraManager: NSObject, ObservableObject {
     private let focusLockDelay: TimeInterval = 0.2
     private let autoExposureSettleMaximumDuration: TimeInterval = 0.75
     private let autoExposureSettleOffsetThreshold: Float = 0.12
+    private let recordingControlSettleDuration: TimeInterval = 0.12
     private let fullFrameAutoExposureRectOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
     private let photoExposureSpotSize: CGFloat = 0.18
 
@@ -912,6 +930,9 @@ final class CameraManager: NSObject, ObservableObject {
             }
         } else {
             proExposureEnabled = isEnabled
+            if isEnabled, proExposureMode != .manual {
+                proExposureMode = .manual
+            }
             if !isEnabled {
                 setWhiteBalanceAuto()
                 setManualFocusEnabled(false)
@@ -1079,6 +1100,7 @@ final class CameraManager: NSObject, ObservableObject {
         guard !isCaptureBusy else { return }
         let nextMode: CaptureMode = captureMode == .video ? .photo : .video
         captureMode = nextMode
+        syncPublishedExposureBiasState(for: nextMode)
         syncPublishedManualFocusState(for: nextMode)
         sessionQueue.async {
             self.stopProExposureAutomation()
@@ -1126,9 +1148,14 @@ final class CameraManager: NSObject, ObservableObject {
 
     func setExposureBias(_ value: Float) {
         guard supportsExposureBiasAdjustment else { return }
-        let clamped = min(max(value, exposureBiasRange.lowerBound), exposureBiasRange.upperBound)
+        let mode = captureMode
+        let clamped = clampedExposureBias(
+            value,
+            for: mode,
+            device: videoInput?.device ?? activeDevice
+        )
+        setStoredExposureBias(clamped, for: mode)
         exposureBias = clamped
-        UserDefaults.standard.set(Double(clamped), forKey: SettingsKey.exposureBias)
 
         sessionQueue.async {
             guard let device = self.videoInput?.device ?? self.activeDevice else { return }
@@ -1212,6 +1239,15 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func applyExposureConfiguration(on device: AVCaptureDevice) {
+        let currentMode = captureMode
+        let currentExposureBias = clampedExposureBias(
+            storedExposureBias(for: currentMode),
+            for: currentMode,
+            device: device
+        )
+        setStoredExposureBias(currentExposureBias, for: currentMode)
+        syncPublishedExposureBiasState(for: currentMode)
+
         switch captureMode {
         case .video where proExposureEnabled && proExposureMode == .shutterAngle180:
             let duration = clampedShutterDuration(
@@ -1253,7 +1289,7 @@ final class CameraManager: NSObject, ObservableObject {
             } else if device.isExposureModeSupported(.autoExpose) {
                 device.exposureMode = .autoExpose
             }
-            device.setExposureTargetBias(exposureBias) { _ in }
+            device.setExposureTargetBias(currentExposureBias) { _ in }
         }
     }
 
@@ -1463,6 +1499,8 @@ final class CameraManager: NSObject, ObservableObject {
             ? focusPosition
             : (videoInput?.device ?? activeDevice)?.lensPosition ?? manualFocusPosition
         sessionQueue.async {
+            self.pendingFocusLockWorkItem?.cancel()
+            self.pendingFocusLockWorkItem = nil
             guard let device = self.videoInput?.device ?? self.activeDevice else { return }
             do {
                 try device.lockForConfiguration()
@@ -1477,6 +1515,15 @@ final class CameraManager: NSObject, ObservableObject {
                 }
 
                 if !isEnabled {
+                    if mode == .video {
+                        if device.isFocusPointOfInterestSupported {
+                            device.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5)
+                        }
+                        device.isSubjectAreaChangeMonitoringEnabled = true
+                        DispatchQueue.main.async {
+                            self.isFocusExposureLocked = false
+                        }
+                    }
                     self.syncAutoControlReadback(from: device, mode: mode)
                 }
             } catch {
@@ -2942,7 +2989,6 @@ final class CameraManager: NSObject, ObservableObject {
         guard !isWritingSessionStarted,
               captureMode == .video,
               !proExposureEnabled,
-              !exposureLockedDuringRecording,
               !isFocusExposureLocked,
               let device = videoInput?.device ?? activeDevice else {
             pendingRecordingLeadInStartTime = nil
@@ -2956,10 +3002,21 @@ final class CameraManager: NSObject, ObservableObject {
 
         guard let leadInStartTime = pendingRecordingLeadInStartTime else { return false }
         let elapsed = CMTimeGetSeconds(CMTimeSubtract(sampleTime, leadInStartTime))
-        let exposureOffset = abs(device.exposureTargetOffset)
 
         guard elapsed.isFinite else { return false }
 
+        if exposureLockedDuringRecording {
+            // Freezing exposure at record start can still take a few frames to
+            // propagate through the capture pipeline, so drop that short lead-in.
+            if elapsed < recordingControlSettleDuration {
+                return true
+            }
+
+            pendingRecordingLeadInStartTime = nil
+            return false
+        }
+
+        let exposureOffset = abs(device.exposureTargetOffset)
         if exposureOffset.isFinite,
            exposureOffset > autoExposureSettleOffsetThreshold,
            elapsed < autoExposureSettleMaximumDuration {
@@ -3140,15 +3197,16 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func prepareDeviceForRecording() {
         guard let device = videoInput?.device ?? activeDevice else { return }
-        let usesVideoManualFocus = storedManualFocusEnabled(for: .video)
-        let videoManualFocusPosition = storedManualFocusPosition(for: .video)
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
 
-            if usesManualWhiteBalance(for: .video) {
-                applyManualWhiteBalance(on: device, mode: .video)
-            } else if whiteBalanceLockedDuringRecording, device.isWhiteBalanceModeSupported(.locked) {
+            // Preview is already running with the current video WB/focus state, so
+            // do not re-apply those controls here. Only add recording-specific
+            // locks that differ from preview behavior.
+            if !usesManualWhiteBalance(for: .video),
+               whiteBalanceLockedDuringRecording,
+               device.isWhiteBalanceModeSupported(.locked) {
                 device.whiteBalanceMode = .locked
             }
 
@@ -3156,12 +3214,6 @@ final class CameraManager: NSObject, ObservableObject {
                !proExposureEnabled {
                 // Preserve the preview exposure exactly when recording lock is on.
                 lockCurrentExposureForRecording(on: device)
-            }
-
-            if usesVideoManualFocus, device.isLockingFocusWithCustomLensPositionSupported {
-                device.setFocusModeLocked(lensPosition: videoManualFocusPosition, completionHandler: nil)
-            } else if device.isFocusModeSupported(.continuousAutoFocus) {
-                device.focusMode = .continuousAutoFocus
             }
         } catch {
             presentStatusMessage("Unable to lock camera controls for recording.")
@@ -3234,6 +3286,47 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    private func supportedExposureBiasRange(for device: AVCaptureDevice?) -> ClosedRange<Float> {
+        guard let device else { return -5...5 }
+        return device.minExposureTargetBias...device.maxExposureTargetBias
+    }
+
+    private func storedExposureBias(for mode: CaptureMode) -> Float {
+        switch mode {
+        case .video:
+            return videoExposureBiasState
+        case .photo:
+            return photoExposureBiasState
+        }
+    }
+
+    private func setStoredExposureBias(_ value: Float, for mode: CaptureMode) {
+        switch mode {
+        case .video:
+            videoExposureBiasState = value
+            UserDefaults.standard.set(Double(value), forKey: SettingsKey.videoExposureBias)
+        case .photo:
+            photoExposureBiasState = value
+            UserDefaults.standard.set(Double(value), forKey: SettingsKey.photoExposureBias)
+        }
+    }
+
+    private func clampedExposureBias(_ value: Float,
+                                     for mode: CaptureMode,
+                                     device: AVCaptureDevice? = nil) -> Float {
+        let supportedRange = supportedExposureBiasRange(for: device ?? activeDevice)
+        let targetRange: ClosedRange<Float>
+
+        switch mode {
+        case .video:
+            targetRange = max(supportedRange.lowerBound, -5)...min(supportedRange.upperBound, 5)
+        case .photo:
+            targetRange = supportedRange
+        }
+
+        return min(max(value, targetRange.lowerBound), targetRange.upperBound)
+    }
+
     private func storedManualFocusPosition(for mode: CaptureMode) -> Float {
         switch mode {
         case .video:
@@ -3270,6 +3363,18 @@ final class CameraManager: NSObject, ObservableObject {
         let applyState = {
             self.manualFocusEnabled = self.storedManualFocusEnabled(for: mode)
             self.manualFocusPosition = self.storedManualFocusPosition(for: mode)
+        }
+
+        if Thread.isMainThread {
+            applyState()
+        } else {
+            DispatchQueue.main.async(execute: applyState)
+        }
+    }
+
+    private func syncPublishedExposureBiasState(for mode: CaptureMode) {
+        let applyState = {
+            self.exposureBias = self.storedExposureBias(for: mode)
         }
 
         if Thread.isMainThread {
@@ -3359,6 +3464,10 @@ final class CameraManager: NSObject, ObservableObject {
             photoProExposureEnabled = defaults.bool(forKey: SettingsKey.photoProExposureEnabled)
         }
 
+        if proExposureEnabled, proExposureMode != .manual {
+            proExposureMode = .manual
+        }
+
         if let rawPhotoProMode = defaults.string(forKey: SettingsKey.photoProExposureMode),
            let mode = PhotoProExposureMode(rawValue: rawPhotoProMode) {
             photoProExposureMode = mode == .auto ? .manual : mode
@@ -3394,8 +3503,20 @@ final class CameraManager: NSObject, ObservableObject {
             photoDefaultWideFocalLength = focalLength
         }
 
-        if let savedExposureBias = defaults.object(forKey: SettingsKey.exposureBias) as? Double {
-            exposureBias = Float(savedExposureBias)
+        let legacyExposureBias = defaults.object(forKey: SettingsKey.exposureBias) as? Double
+
+        if let savedVideoExposureBias = defaults.object(forKey: SettingsKey.videoExposureBias) as? Double {
+            videoExposureBiasState = clampedExposureBias(Float(savedVideoExposureBias), for: .video)
+        } else if let legacyExposureBias {
+            videoExposureBiasState = clampedExposureBias(Float(legacyExposureBias), for: .video)
+            defaults.set(Double(videoExposureBiasState), forKey: SettingsKey.videoExposureBias)
+        }
+
+        if let savedPhotoExposureBias = defaults.object(forKey: SettingsKey.photoExposureBias) as? Double {
+            photoExposureBiasState = clampedExposureBias(Float(savedPhotoExposureBias), for: .photo)
+        } else if let legacyExposureBias {
+            photoExposureBiasState = clampedExposureBias(Float(legacyExposureBias), for: .photo)
+            defaults.set(Double(photoExposureBiasState), forKey: SettingsKey.photoExposureBias)
         }
 
         if let savedVideoWhiteBalanceTemperature = defaults.object(forKey: SettingsKey.videoWhiteBalanceTemperature) as? Double {
@@ -3447,6 +3568,7 @@ final class CameraManager: NSObject, ObservableObject {
             defaults.set(legacyManualFocusPosition, forKey: SettingsKey.photoManualFocusPosition)
         }
 
+        syncPublishedExposureBiasState(for: captureMode)
         syncPublishedManualFocusState(for: captureMode)
 
         if let savedShutterDenominator = defaults.object(forKey: SettingsKey.manualShutterSpeedDenominator) as? Int {

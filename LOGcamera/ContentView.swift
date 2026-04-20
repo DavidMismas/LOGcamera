@@ -161,6 +161,13 @@ private struct CameraScreen: View {
         case focus
     }
 
+    private enum VideoProAdjustment: String {
+        case shutterSpeed
+        case iso
+        case whiteBalance
+        case focus
+    }
+
     @ObservedObject var cameraManager: CameraManager
     @State private var showsControlMenu = false
     @State private var showsExposurePanel = false
@@ -168,6 +175,7 @@ private struct CameraScreen: View {
     @State private var showsFocusPanel = false
     @State private var showsPhotoExposureBiasPanel = true
     @State private var activePhotoProAdjustment: PhotoProAdjustment?
+    @State private var activeVideoProAdjustment: VideoProAdjustment?
     @State private var previewControlRotationDegrees: Double = 0
 
     var body: some View {
@@ -196,8 +204,7 @@ private struct CameraScreen: View {
                             .offset(y: 10)
                             .padding(.horizontal, 14)
                     } else {
-                        previewSurface(width: proxy.size.width, forceFullWidth: false)
-                        Spacer(minLength: 0)
+                        videoModeLayout(in: proxy.size)
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
@@ -214,6 +221,15 @@ private struct CameraScreen: View {
         .onAppear {
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
             updatePreviewControlRotation(for: UIDevice.current.orientation)
+            if cameraManager.captureMode == .photo {
+                showsPhotoExposureBiasPanel = !cameraManager.photoProExposureEnabled
+                activePhotoProAdjustment = cameraManager.photoProExposureEnabled ? .iso : nil
+                activeVideoProAdjustment = nil
+            } else {
+                showsPhotoExposureBiasPanel = false
+                activePhotoProAdjustment = nil
+                activeVideoProAdjustment = cameraManager.proExposureEnabled ? .iso : nil
+            }
         }
         .onDisappear {
             UIDevice.current.endGeneratingDeviceOrientationNotifications()
@@ -225,8 +241,15 @@ private struct CameraScreen: View {
             showsExposurePanel = false
             showsWhiteBalancePanel = false
             showsFocusPanel = false
-            showsPhotoExposureBiasPanel = cameraManager.captureMode == .photo
-            activePhotoProAdjustment = nil
+            if cameraManager.captureMode == .photo {
+                showsPhotoExposureBiasPanel = !cameraManager.photoProExposureEnabled
+                activePhotoProAdjustment = cameraManager.photoProExposureEnabled ? .iso : nil
+                activeVideoProAdjustment = nil
+            } else {
+                showsPhotoExposureBiasPanel = false
+                activePhotoProAdjustment = nil
+                activeVideoProAdjustment = cameraManager.proExposureEnabled ? .iso : nil
+            }
         }
         .onChange(of: cameraManager.photoProExposureEnabled) { _, isEnabled in
             withAnimation(.easeOut(duration: 0.18)) {
@@ -240,13 +263,12 @@ private struct CameraScreen: View {
             }
         }
         .onChange(of: cameraManager.proExposureEnabled) { _, isEnabled in
-            withAnimation(.easeOut(duration: 0.18)) {
-                if isEnabled {
-                    showsExposurePanel = false
-                } else {
-                    showsWhiteBalancePanel = false
-                    showsFocusPanel = false
-                }
+            if isEnabled {
+                activeVideoProAdjustment = activeVideoProAdjustment ?? .iso
+            } else {
+                showsWhiteBalancePanel = false
+                showsFocusPanel = false
+                activeVideoProAdjustment = nil
             }
         }
         .onChange(of: cameraManager.supportsManualFocus) { _, supportsManualFocus in
@@ -254,6 +276,9 @@ private struct CameraScreen: View {
                 showsFocusPanel = false
                 if activePhotoProAdjustment == .focus {
                     activePhotoProAdjustment = nil
+                }
+                if activeVideoProAdjustment == .focus {
+                    activeVideoProAdjustment = cameraManager.captureMode == .video && cameraManager.proExposureEnabled ? .iso : nil
                 }
             }
         }
@@ -275,7 +300,7 @@ private struct CameraScreen: View {
                         ) {
                             withAnimation(.easeOut(duration: 0.18)) {
                                 showsPhotoExposureBiasPanel = false
-                                activePhotoProAdjustment = activePhotoProAdjustment == .shutterSpeed ? nil : .shutterSpeed
+                                activePhotoProAdjustment = .shutterSpeed
                             }
                         }
 
@@ -285,7 +310,7 @@ private struct CameraScreen: View {
                         ) {
                             withAnimation(.easeOut(duration: 0.18)) {
                                 showsPhotoExposureBiasPanel = false
-                                activePhotoProAdjustment = activePhotoProAdjustment == .iso ? nil : .iso
+                                activePhotoProAdjustment = .iso
                             }
                         }
 
@@ -295,7 +320,7 @@ private struct CameraScreen: View {
                         ) {
                             withAnimation(.easeOut(duration: 0.18)) {
                                 showsPhotoExposureBiasPanel = false
-                                activePhotoProAdjustment = activePhotoProAdjustment == .whiteBalance ? nil : .whiteBalance
+                                activePhotoProAdjustment = .whiteBalance
                             }
                         }
 
@@ -306,57 +331,56 @@ private struct CameraScreen: View {
                             ) {
                                 withAnimation(.easeOut(duration: 0.18)) {
                                     showsPhotoExposureBiasPanel = false
-                                    activePhotoProAdjustment = activePhotoProAdjustment == .focus ? nil : .focus
+                                    activePhotoProAdjustment = .focus
                                 }
                             }
                         }
                     }
                 } else {
-                    compactToggleChip(title: "PRO", isSelected: cameraManager.proExposureEnabled) {
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            showsExposurePanel = false
-                            cameraManager.setProExposureEnabled(!cameraManager.proExposureEnabled)
-                        }
+                    compactControlChip(title: "M", isSelected: cameraManager.proExposureEnabled) {
+                        let isEnabling = !cameraManager.proExposureEnabled
+                        activeVideoProAdjustment = isEnabling ? (activeVideoProAdjustment ?? .iso) : nil
+                        cameraManager.setProExposureEnabled(isEnabling)
                     }
 
                     if cameraManager.proExposureEnabled {
-                        Menu {
-                            ForEach(ProExposureMode.allCases) { mode in
-                                Button(mode.title) {
-                                    showsExposurePanel = false
-                                    cameraManager.selectProExposureMode(mode)
-                                }
-                            }
-                        } label: {
-                            compactMenuChip(title: cameraManager.proExposureMode.title)
-                        }
-
-                        if cameraManager.proExposureMode == .shutterAngle180 {
-                            compactReadOnlyChip(title: "S \(cameraManager.currentShutterSpeedLabel)")
-                            compactReadOnlyChip(title: "ISO Auto")
-                        }
-
-                        if cameraManager.proExposureMode == .manual {
-                            Menu {
-                                ForEach(cameraManager.availableShutterSpeedDenominators, id: \.self) { denominator in
-                                    Button("1/\(denominator)") {
-                                        cameraManager.setManualShutterSpeedDenominator(denominator)
-                                    }
-                                }
-                            } label: {
-                                compactMenuChip(title: "S \(cameraManager.currentShutterSpeedLabel)")
-                            }
-
-                            Menu {
-                                ForEach(cameraManager.availableISOValues, id: \.self) { iso in
-                                    Button(String(format: "ISO %.0f", iso)) {
-                                        cameraManager.setManualISO(iso)
-                                    }
-                                }
-                            } label: {
-                                compactMenuChip(title: "ISO \(cameraManager.currentISOValueLabel)")
+                        compactActionChip(
+                            title: "SS \(cameraManager.currentShutterSpeedLabel)",
+                            isSelected: activeVideoProAdjustment == .shutterSpeed
+                        ) {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                activeVideoProAdjustment = .shutterSpeed
                             }
                         }
+
+                        compactActionChip(
+                            title: "ISO \(cameraManager.currentISOValueLabel)",
+                            isSelected: activeVideoProAdjustment == .iso
+                        ) {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                activeVideoProAdjustment = .iso
+                            }
+                        }
+
+                        compactActionChip(
+                            title: "WB \(whiteBalanceValueLabel)",
+                            isSelected: activeVideoProAdjustment == .whiteBalance
+                        ) {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                activeVideoProAdjustment = .whiteBalance
+                            }
+                        }
+
+                        compactActionChip(
+                            title: "MF \(focusValueLabel)",
+                            isSelected: activeVideoProAdjustment == .focus
+                        ) {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                activeVideoProAdjustment = .focus
+                            }
+                        }
+                        .disabled(!cameraManager.supportsManualFocus)
+                        .opacity(cameraManager.supportsManualFocus ? 1 : 0.45)
                     }
                 }
             }
@@ -366,10 +390,38 @@ private struct CameraScreen: View {
         .padding(.bottom, 2)
     }
 
+    private func videoModeLayout(in size: CGSize) -> some View {
+        VStack(spacing: 0) {
+            previewSurface(
+                width: videoPreviewWidth(for: size),
+                forceFullWidth: false,
+                showsBottomOverlay: false
+            )
+            .padding(.top, 12)
+
+            videoAdjustmentDock
+                .padding(.top, 8)
+
+            Spacer(minLength: 0)
+
+            videoBottomBar
+                .offset(y: 10)
+                .padding(.horizontal, 14)
+        }
+    }
+
     private func previewSurface(width: CGFloat, forceFullWidth: Bool) -> some View {
+        previewSurface(width: width, forceFullWidth: forceFullWidth, showsBottomOverlay: true)
+    }
+
+    private func previewSurface(
+        width: CGFloat,
+        forceFullWidth: Bool,
+        showsBottomOverlay: Bool
+    ) -> some View {
         CameraPreviewView(cameraManager: cameraManager, isSuspended: showsControlMenu)
             .frame(
-                width: forceFullWidth ? width : nil,
+                width: width,
                 height: forceFullWidth ? (width / cameraManager.previewAspectRatio) : nil
             )
             .frame(maxWidth: .infinity)
@@ -407,16 +459,38 @@ private struct CameraScreen: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                Group {
-                    if cameraManager.captureMode == .photo {
-                        photoPreviewOverlay
-                    } else {
-                        bottomOverlay
-                    }
+                if !showsBottomOverlay,
+                   let statusMessage = videoPreviewStatusMessage {
+                    Text(statusMessage)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .metalRoundedPanel(cornerRadius: 16)
+                        .padding(.bottom, 14)
                 }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 8)
             }
+            .overlay(alignment: .bottom) {
+                if showsBottomOverlay {
+                    Group {
+                        if cameraManager.captureMode == .photo {
+                            photoPreviewOverlay
+                        } else {
+                            bottomOverlay
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+                }
+            }
+    }
+
+    private func videoPreviewWidth(for size: CGSize) -> CGFloat {
+        let maxWidth = max(size.width - 28, 180)
+        let reservedHeight: CGFloat = size.width > size.height ? 172 : 216
+        let maxHeight = max(size.height - reservedHeight, 220)
+        let fittedHeight = min(maxWidth / cameraManager.previewAspectRatio, maxHeight)
+        return fittedHeight * cameraManager.previewAspectRatio
     }
 
     private var shouldShowCompositionGrid: Bool {
@@ -540,6 +614,11 @@ private struct CameraScreen: View {
         return statusMessage.localizedCaseInsensitiveContains("stabilization") ? nil : statusMessage
     }
 
+    private var videoPreviewStatusMessage: String? {
+        guard cameraManager.captureMode == .video else { return nil }
+        return cameraManager.statusMessage
+    }
+
     private var showsPhotoMeteringResetButton: Bool {
         cameraManager.captureMode == .photo && cameraManager.photoMeteringHandlesVisible
     }
@@ -563,6 +642,30 @@ private struct CameraScreen: View {
         .frame(maxWidth: .infinity, minHeight: 118, alignment: .center)
     }
 
+    private var videoBottomBar: some View {
+        VStack(spacing: 6) {
+            lensPickerStrip
+                .padding(.bottom, 0)
+
+            HStack(spacing: 0) {
+                HStack {
+                    captureModeSwitchButton
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 10)
+
+                recordButton
+
+                HStack {
+                    controlsButton
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.trailing, 10)
+            }
+            .frame(maxWidth: .infinity, minHeight: 100, alignment: .center)
+        }
+    }
+
     private var photoAdjustmentHeaderRowHeight: CGFloat {
         14
     }
@@ -575,6 +678,20 @@ private struct CameraScreen: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
             } else if showsPhotoExposureBiasPanel && !cameraManager.photoProExposureEnabled {
                 photoExposureBiasAdjustmentPanel
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+
+    private var videoAdjustmentDock: some View {
+        ZStack {
+            if cameraManager.proExposureEnabled,
+               let activeVideoProAdjustment {
+                videoProAdjustmentPanel(for: activeVideoProAdjustment)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            } else if cameraManager.supportsExposureBiasAdjustment {
+                videoExposureBiasAdjustmentPanel
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
             }
         }
@@ -629,6 +746,70 @@ private struct CameraScreen: View {
                 Spacer(minLength: 0)
 
                 photoExposureBiasResetButton
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func videoProAdjustmentPanel(for adjustment: VideoProAdjustment) -> some View {
+        let sliderBinding = videoSliderBinding(for: adjustment)
+        let sliderRange = 0...Double(max(videoAdjustmentStepCount(for: adjustment) - 1, 0))
+
+        switch adjustment {
+        case .whiteBalance:
+            photoAdjustmentHeaderPanel(
+                sliderBinding: sliderBinding,
+                sliderRange: sliderRange
+            ) {
+                HStack {
+                    Spacer(minLength: 0)
+                    photoWhiteBalanceResetButton
+                }
+            }
+        case .focus:
+            photoAdjustmentHeaderPanel(
+                sliderBinding: sliderBinding,
+                sliderRange: sliderRange
+            ) {
+                HStack {
+                    Spacer(minLength: 0)
+                    photoFocusResetButton
+                }
+            }
+        case .shutterSpeed, .iso:
+            photoAdjustmentPlainPanel(
+                sliderBinding: sliderBinding,
+                sliderRange: sliderRange
+            )
+        }
+    }
+
+    private var videoExposureBiasAdjustmentPanel: some View {
+        photoAdjustmentPanelContainer {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .center, spacing: 10) {
+                    Text(String(format: "%+.1f EV", cameraManager.exposureBias))
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+
+                    photoExposureBiasResetButton
+                }
+                .frame(height: photoAdjustmentHeaderRowHeight)
+                .frame(maxWidth: .infinity)
+
+                DiscreteLandscapeSlider(
+                    value: Binding(
+                        get: { Double(cameraManager.exposureBias) },
+                        set: { cameraManager.setExposureBias(Float($0)) }
+                    ),
+                    range: Double(cameraManager.videoExposureBiasRange.lowerBound)...Double(cameraManager.videoExposureBiasRange.upperBound),
+                    step: 0.01
+                )
+                .frame(maxWidth: .infinity)
+                .padding(.top, 2)
             }
         }
     }
@@ -809,7 +990,7 @@ private struct CameraScreen: View {
                     get: { Double(cameraManager.exposureBias) },
                     set: { cameraManager.setExposureBias(Float($0)) }
                 ),
-                in: Double(cameraManager.exposureBiasRange.lowerBound)...Double(cameraManager.exposureBiasRange.upperBound)
+                in: Double(cameraManager.videoExposureBiasRange.lowerBound)...Double(cameraManager.videoExposureBiasRange.upperBound)
             )
             .tint(AppTheme.accent)
         }
@@ -843,7 +1024,7 @@ private struct CameraScreen: View {
                     get: { Double(cameraManager.exposureBias) },
                     set: { cameraManager.setExposureBias(Float($0)) }
                 ),
-                range: Double(cameraManager.exposureBiasRange.lowerBound)...Double(cameraManager.exposureBiasRange.upperBound),
+                range: Double(cameraManager.videoExposureBiasRange.lowerBound)...Double(cameraManager.videoExposureBiasRange.upperBound),
                 step: 0.01
             )
             .tint(AppTheme.accent)
@@ -1086,7 +1267,7 @@ private struct CameraScreen: View {
         } label: {
             ZStack {
                 if cameraManager.captureMode == .photo {
-                    ApertureOctagonShape()
+                    Circle()
                         .fill(
                             LinearGradient(
                                 colors: [
@@ -1097,39 +1278,39 @@ private struct CameraScreen: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 78, height: 78)
+                        .frame(width: 72, height: 72)
                         .overlay(
-                            ApertureOctagonShape()
-                                .stroke(Color.white.opacity(0.88), lineWidth: 2.6)
+                            Circle()
+                                .stroke(Color.white.opacity(0.88), lineWidth: 2.4)
                         )
                         .overlay(
-                            ApertureOctagonShape()
+                            Circle()
                                 .stroke(Color.black.opacity(0.38), lineWidth: 1)
                                 .padding(3)
                         )
                         .overlay(
-                            ApertureOctagonShape()
+                            Circle()
                                 .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
-                                .padding(9)
+                                .padding(8)
                         )
 
                     PhotoShutterCore(isClosed: cameraManager.isPhotoCaptureInProgress)
-                        .frame(width: 52, height: 52)
+                        .frame(width: 48, height: 48)
                         .scaleEffect(cameraManager.isPhotoCaptureInProgress ? 0.94 : 1)
                 } else {
                     Circle()
                         .strokeBorder(Color.white.opacity(0.94), lineWidth: 4)
-                        .frame(width: 82, height: 82)
+                        .frame(width: 74, height: 74)
                         .background(
                             Circle()
                                 .fill(AppTheme.surfaceGradient)
-                                .frame(width: 82, height: 82)
+                                .frame(width: 74, height: 74)
                         )
 
                     if cameraManager.isRecording {
                         RoundedRectangle(cornerRadius: 12)
                             .fill(AppTheme.recordLive)
-                            .frame(width: 32, height: 32)
+                            .frame(width: 28, height: 28)
                     } else {
                         Circle()
                             .fill(
@@ -1137,16 +1318,16 @@ private struct CameraScreen: View {
                                     ? AppTheme.activeGradient
                                     : LinearGradient(colors: [Color.gray.opacity(0.65), Color.gray.opacity(0.28)], startPoint: .topLeading, endPoint: .bottomTrailing)
                             )
-                            .frame(width: 58, height: 58)
+                            .frame(width: 50, height: 50)
                     }
                 }
             }
-            .offset(y: cameraManager.captureMode == .photo ? 0 : 11)
+            .offset(y: cameraManager.captureMode == .photo ? 0 : 6)
             .frame(
-                width: cameraManager.captureMode == .photo ? 104 : 124,
-                height: cameraManager.captureMode == .photo ? 104 : 124
+                width: cameraManager.captureMode == .photo ? 96 : 106,
+                height: cameraManager.captureMode == .photo ? 96 : 106
             )
-            .contentShape(cameraManager.captureMode == .photo ? AnyShape(ApertureOctagonShape()) : AnyShape(Circle()))
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(!cameraManager.canTriggerCapture)
@@ -1158,13 +1339,13 @@ private struct CameraScreen: View {
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: cameraManager.captureMode == .video ? "camera.fill" : "video.fill")
-                    .font(.system(size: 15, weight: .bold))
+                    .font(.system(size: 14, weight: .bold))
                 Text(cameraManager.captureMode.switchButtonTitle)
                     .font(.system(size: 8, weight: .black, design: .monospaced))
                     .tracking(0.7)
             }
             .foregroundStyle(AppTheme.textPrimary)
-            .frame(width: 54, height: 54)
+            .frame(width: 48, height: 48)
             .metalCirclePanel()
         }
         .buttonStyle(.plain)
@@ -1180,9 +1361,9 @@ private struct CameraScreen: View {
             showsControlMenu.toggle()
         } label: {
             Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(AppTheme.textPrimary)
-                .frame(width: 52, height: 52)
+                .frame(width: 48, height: 48)
                 .metalCirclePanel()
         }
         .buttonStyle(.plain)
@@ -1241,10 +1422,38 @@ private struct CameraScreen: View {
         )
     }
 
+    private var videoShutterSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(videoCurrentShutterIndex)
+            },
+            set: { newValue in
+                let index = photoClampedIndex(for: newValue, count: cameraManager.availableShutterSpeedDenominators.count)
+                guard cameraManager.availableShutterSpeedDenominators.indices.contains(index) else { return }
+                cameraManager.setManualShutterSpeedDenominator(
+                    cameraManager.availableShutterSpeedDenominators[index]
+                )
+            }
+        )
+    }
+
     private var photoISOSliderBinding: Binding<Double> {
         Binding(
             get: {
                 Double(photoCurrentISOIndex)
+            },
+            set: { newValue in
+                let index = photoClampedIndex(for: newValue, count: cameraManager.availableISOValues.count)
+                guard cameraManager.availableISOValues.indices.contains(index) else { return }
+                cameraManager.setManualISO(cameraManager.availableISOValues[index])
+            }
+        )
+    }
+
+    private var videoISOSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(videoCurrentISOIndex)
             },
             set: { newValue in
                 let index = photoClampedIndex(for: newValue, count: cameraManager.availableISOValues.count)
@@ -1268,6 +1477,20 @@ private struct CameraScreen: View {
         )
     }
 
+    private var videoWhiteBalanceSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(videoCurrentWhiteBalanceIndex)
+            },
+            set: { newValue in
+                let values = photoWhiteBalanceValues
+                let index = photoClampedIndex(for: newValue, count: values.count)
+                guard values.indices.contains(index) else { return }
+                cameraManager.setWhiteBalanceTemperature(values[index])
+            }
+        )
+    }
+
     private var photoFocusSliderBinding: Binding<Double> {
         Binding(
             get: {
@@ -1280,7 +1503,24 @@ private struct CameraScreen: View {
         )
     }
 
+    private var videoFocusSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(videoCurrentFocusIndex)
+            },
+            set: { newValue in
+                let index = photoClampedIndex(for: newValue, count: 101)
+                cameraManager.setManualFocusPosition(Float(index) / 100)
+            }
+        )
+    }
+
     private var photoCurrentShutterIndex: Int {
+        let values = cameraManager.availableShutterSpeedDenominators
+        return values.firstIndex(of: cameraManager.currentShutterSpeedDenominator) ?? 0
+    }
+
+    private var videoCurrentShutterIndex: Int {
         let values = cameraManager.availableShutterSpeedDenominators
         return values.firstIndex(of: cameraManager.currentShutterSpeedDenominator) ?? 0
     }
@@ -1295,6 +1535,15 @@ private struct CameraScreen: View {
         }?.offset ?? 0
     }
 
+    private var videoCurrentISOIndex: Int {
+        let values = cameraManager.availableISOValues
+        guard !values.isEmpty else { return 0 }
+
+        return values.enumerated().min { lhs, rhs in
+            abs(lhs.element - cameraManager.manualISO) < abs(rhs.element - cameraManager.manualISO)
+        }?.offset ?? 0
+    }
+
     private var photoCurrentWhiteBalanceIndex: Int {
         let values = photoWhiteBalanceValues
         guard !values.isEmpty else { return 0 }
@@ -1304,6 +1553,16 @@ private struct CameraScreen: View {
             abs(lhs.element - currentTemperature) < abs(rhs.element - currentTemperature)
         }?.offset ?? 0
         return closestIndex
+    }
+
+    private var videoCurrentWhiteBalanceIndex: Int {
+        let values = photoWhiteBalanceValues
+        guard !values.isEmpty else { return 0 }
+
+        let currentTemperature = cameraManager.whiteBalanceTemperature
+        return values.enumerated().min { lhs, rhs in
+            abs(lhs.element - currentTemperature) < abs(rhs.element - currentTemperature)
+        }?.offset ?? 0
     }
 
     private var photoCurrentExposureBiasIndex: Int {
@@ -1320,7 +1579,24 @@ private struct CameraScreen: View {
         min(max(Int((Double(cameraManager.manualFocusPosition) * 100).rounded()), 0), 100)
     }
 
+    private var videoCurrentFocusIndex: Int {
+        min(max(Int((Double(cameraManager.manualFocusPosition) * 100).rounded()), 0), 100)
+    }
+
     private func photoAdjustmentStepCount(for adjustment: PhotoProAdjustment) -> Int {
+        switch adjustment {
+        case .shutterSpeed:
+            return cameraManager.availableShutterSpeedDenominators.count
+        case .iso:
+            return cameraManager.availableISOValues.count
+        case .whiteBalance:
+            return photoWhiteBalanceValues.count
+        case .focus:
+            return 101
+        }
+    }
+
+    private func videoAdjustmentStepCount(for adjustment: VideoProAdjustment) -> Int {
         switch adjustment {
         case .shutterSpeed:
             return cameraManager.availableShutterSpeedDenominators.count
@@ -1343,6 +1619,19 @@ private struct CameraScreen: View {
             return photoWhiteBalanceSliderBinding
         case .focus:
             return photoFocusSliderBinding
+        }
+    }
+
+    private func videoSliderBinding(for adjustment: VideoProAdjustment) -> Binding<Double> {
+        switch adjustment {
+        case .shutterSpeed:
+            return videoShutterSliderBinding
+        case .iso:
+            return videoISOSliderBinding
+        case .whiteBalance:
+            return videoWhiteBalanceSliderBinding
+        case .focus:
+            return videoFocusSliderBinding
         }
     }
 
