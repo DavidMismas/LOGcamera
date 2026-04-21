@@ -247,3 +247,251 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
             .translatedBy(x: translateX / scale, y: translateY / scale)
     }
 }
+
+final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
+    private weak var view: MTKView?
+    private let commandQueue: MTLCommandQueue
+    private let context: CIContext
+    private let lutProcessor = PreviewLUTProcessor()
+    private let stateQueue = DispatchQueue(label: "com.logcamera.focusPeakingOverlayState")
+    private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
+    private var latestFrame: PreviewFrame?
+    private var isEnabled = false
+    private var sensitivityPercent = 55
+    private var previewLookMode: PreviewLookMode = .log
+
+    private static let peakingKernel: CIColorKernel? = {
+        let source = """
+        kernel vec4 focusPeaking(__sample image,
+                                 float threshold,
+                                 float softness,
+                                 float peakRed,
+                                 float peakGreen,
+                                 float peakBlue) {
+            float signal = clamp(max(image.r, max(image.g, image.b)), 0.0, 1.0);
+            float mask = smoothstep(threshold, threshold + softness, signal);
+            if (mask <= 0.001) {
+                return vec4(0.0, 0.0, 0.0, 0.0);
+            }
+
+            return vec4(peakRed, peakGreen, peakBlue, min(0.95, mask * 0.92));
+        }
+        """
+        return CIColorKernel(source: source)
+    }()
+
+    init?(view: MTKView) {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            return nil
+        }
+
+        self.view = view
+        self.commandQueue = commandQueue
+        self.context = CIContext(
+            mtlDevice: device,
+            options: [.cacheIntermediates: false]
+        )
+
+        super.init()
+
+        view.device = device
+        view.delegate = self
+        view.colorPixelFormat = .bgra8Unorm
+        view.framebufferOnly = false
+        view.isOpaque = false
+        view.backgroundColor = .clear
+        view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        view.enableSetNeedsDisplay = false
+        view.isPaused = false
+        view.preferredFramesPerSecond = 60
+    }
+
+    func setEnabled(_ isEnabled: Bool) {
+        stateQueue.async {
+            self.isEnabled = isEnabled
+        }
+    }
+
+    func setSensitivityPercent(_ value: Int) {
+        stateQueue.async {
+            self.sensitivityPercent = min(max(value, 20), 100)
+        }
+    }
+
+    func setPreviewLookMode(_ mode: PreviewLookMode) {
+        stateQueue.async {
+            self.previewLookMode = mode
+        }
+    }
+
+    func enqueue(_ frame: PreviewFrame) {
+        stateQueue.async {
+            self.latestFrame = frame
+        }
+    }
+
+    func clear() {
+        stateQueue.async {
+            self.latestFrame = nil
+        }
+    }
+
+    func draw(in view: MTKView) {
+        guard let drawable = view.currentDrawable,
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
+            return
+        }
+
+        let snapshot = stateQueue.sync {
+            (
+                frame: latestFrame,
+                overlayEnabled: isEnabled,
+                sensitivity: sensitivityPercent,
+                lookMode: previewLookMode
+            )
+        }
+        let bounds = CGRect(origin: .zero, size: view.drawableSize)
+        guard bounds.width > 0, bounds.height > 0 else { return }
+
+        let outputImage: CIImage
+        if snapshot.overlayEnabled,
+           let frame = snapshot.frame,
+           let peakingImage = makePeakingImage(
+            for: frame,
+            in: bounds,
+            sensitivityPercent: snapshot.sensitivity,
+            lookMode: snapshot.lookMode
+           ) {
+            outputImage = peakingImage
+        } else {
+            outputImage = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: bounds)
+        }
+
+        context.render(
+            outputImage,
+            to: drawable.texture,
+            commandBuffer: commandBuffer,
+            bounds: bounds,
+            colorSpace: outputColorSpace
+        )
+
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+    }
+
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    private func makePeakingImage(for frame: PreviewFrame,
+                                  in bounds: CGRect,
+                                  sensitivityPercent: Int,
+                                  lookMode: PreviewLookMode) -> CIImage? {
+        guard let kernel = Self.peakingKernel else { return nil }
+        guard let sourceImage = monitoringImage(for: frame, lookMode: lookMode) else { return nil }
+
+        let normalizedSensitivity = Float(sensitivityPercent - 20) / 80
+        let threshold = 0.28 - (0.16 * normalizedSensitivity)
+        let edgeIntensity = 2.4 + (4.8 * Double(normalizedSensitivity))
+
+        let monochromeImage = sourceImage
+            .applyingFilter(
+                "CIColorControls",
+                parameters: [
+                    kCIInputSaturationKey: 0.0,
+                    kCIInputContrastKey: 1.15
+                ]
+            )
+            .clampedToExtent()
+            .applyingFilter(
+                "CIGaussianBlur",
+                parameters: [kCIInputRadiusKey: 0.7]
+            )
+            .cropped(to: sourceImage.extent)
+
+        let edgesImage = monochromeImage
+            .applyingFilter(
+                "CIEdges",
+                parameters: [kCIInputIntensityKey: edgeIntensity]
+            )
+            .cropped(to: sourceImage.extent)
+
+        guard let overlayImage = kernel.apply(
+            extent: edgesImage.extent,
+            arguments: [
+                edgesImage,
+                threshold,
+                0.10,
+                0.12,
+                0.98,
+                0.30
+            ]
+        ) else {
+            return nil
+        }
+
+        return overlayImage.transformed(
+            by: aspectFillTransform(for: sourceImage.extent, in: bounds)
+        )
+    }
+
+    private func monitoringImage(for frame: PreviewFrame, lookMode: PreviewLookMode) -> CIImage? {
+        switch lookMode {
+        case .log:
+            var options: [CIImageOption: Any] = [.applyCleanAperture: true]
+            if let sourceColorSpace = sourceColorSpace(for: frame.pixelBuffer) {
+                options[.colorSpace] = sourceColorSpace
+            }
+            return CIImage(cvPixelBuffer: frame.pixelBuffer, options: options)
+
+        case .rec709:
+            let rawImage = CIImage(
+                cvPixelBuffer: frame.pixelBuffer,
+                options: [
+                    .applyCleanAperture: true,
+                    .colorSpace: NSNull()
+                ]
+            )
+
+            guard let cube = lutProcessor.cube(for: frame.profile),
+                  let filter = CIFilter(name: "CIColorCube") else {
+                return rawImage
+            }
+
+            filter.setValue(rawImage, forKey: kCIInputImageKey)
+            filter.setValue(cube.dimension, forKey: "inputCubeDimension")
+            filter.setValue(cube.data, forKey: "inputCubeData")
+            return filter.outputImage?.cropped(to: rawImage.extent) ?? rawImage
+        }
+    }
+
+    private func sourceColorSpace(for pixelBuffer: CVPixelBuffer) -> CGColorSpace? {
+        if let directColorSpace = CVImageBufferGetColorSpace(pixelBuffer) {
+            return directColorSpace.takeUnretainedValue()
+        }
+
+        guard let attachments = CVBufferCopyAttachments(pixelBuffer, .shouldPropagate) else {
+            return nil
+        }
+
+        return CVImageBufferCreateColorSpaceFromAttachments(attachments as CFDictionary)?.takeRetainedValue()
+    }
+
+    private func aspectFillTransform(for sourceRect: CGRect, in targetRect: CGRect) -> CGAffineTransform {
+        guard sourceRect.width > 0,
+              sourceRect.height > 0,
+              targetRect.width > 0,
+              targetRect.height > 0 else {
+            return .identity
+        }
+
+        let scale = max(targetRect.width / sourceRect.width, targetRect.height / sourceRect.height)
+        let scaledWidth = sourceRect.width * scale
+        let scaledHeight = sourceRect.height * scale
+        let translateX = targetRect.midX - scaledWidth / 2 - sourceRect.minX * scale
+        let translateY = targetRect.midY - scaledHeight / 2 - sourceRect.minY * scale
+
+        return CGAffineTransform(scaleX: scale, y: scale)
+            .translatedBy(x: translateX / scale, y: translateY / scale)
+    }
+}

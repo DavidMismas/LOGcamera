@@ -1877,28 +1877,33 @@ private struct CameraSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        ZStack {
-            AppTheme.backgroundGradient.ignoresSafeArea()
-            RadialGradient(
-                colors: [Color.white.opacity(0.10), Color.clear],
-                center: .topLeading,
-                startRadius: 10,
-                endRadius: 320
-            )
-            .ignoresSafeArea()
-            .blendMode(.screen)
+        GeometryReader { proxy in
+            ZStack {
+                Color.black.ignoresSafeArea()
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.07, green: 0.07, blue: 0.08),
+                        Color.black,
+                        Color(red: 0.05, green: 0.05, blue: 0.06)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
 
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 14) {
-                    header
-                    appSection
-                    photoSection
-                    videoSection
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        header
+                        appSection
+                        photoSection
+                        videoSection
+                    }
+                    .frame(width: max(proxy.size.width - 32, 0), alignment: .leading)
+                    .padding(.top, 12)
+                    .padding(.bottom, 32)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 32)
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
         }
         .preferredColorScheme(.dark)
     }
@@ -1909,6 +1914,11 @@ private struct CameraSettingsView: View {
                 Text("Settings")
                     .font(.system(size: 24, weight: .heavy, design: .monospaced))
                     .foregroundStyle(AppTheme.textPrimary)
+
+                Text("Separate defaults for launch, photo capture, and video monitoring.")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer()
@@ -1929,9 +1939,9 @@ private struct CameraSettingsView: View {
 
     private var appSection: some View {
         settingsCard(title: "App") {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 settingsSubsection(title: "Default Mode") {
-                    HStack(spacing: 8) {
+                    settingsButtonGrid {
                         ForEach(CaptureMode.allCases) { mode in
                             selectionButton(
                                 title: mode.title,
@@ -1944,67 +1954,12 @@ private struct CameraSettingsView: View {
 
                     settingsSupportingText("This mode opens when the app launches.")
                 }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Monitoring") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 8) {
-                            selectionButton(
-                                title: "Zebra Off",
-                                isSelected: !cameraManager.zebraEnabled
-                            ) {
-                                cameraManager.zebraEnabled = false
-                            }
-
-                            selectionButton(
-                                title: "Zebra On",
-                                isSelected: cameraManager.zebraEnabled
-                            ) {
-                                cameraManager.zebraEnabled = true
-                            }
-                        }
-
-                        HStack {
-                            Text("Threshold")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(AppTheme.textPrimary)
-                            Spacer()
-                            Text("\(cameraManager.zebraThresholdPercent)%")
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                .foregroundStyle(AppTheme.accent)
-                        }
-
-                        Slider(
-                            value: Binding(
-                                get: { Double(cameraManager.zebraThresholdPercent) },
-                                set: { cameraManager.setZebraThresholdPercent(Int($0.rounded())) }
-                            ),
-                            in: 80...100,
-                            step: 1
-                        )
-                        .tint(AppTheme.accent)
-
-                        HStack(spacing: 8) {
-                            ForEach(ZebraChannel.allCases) { channel in
-                                selectionButton(
-                                    title: channel.title,
-                                    isSelected: cameraManager.zebraChannel == channel
-                                ) {
-                                    cameraManager.selectZebraChannel(channel)
-                                }
-                            }
-                        }
-                    }
-
-                    settingsSupportingText("Uses the selected RGB channel and shows zebras once that channel reaches the chosen threshold.")
-                }
             }
         }
     }
 
     private var previewOptions: some View {
-        HStack(spacing: 8) {
+        settingsButtonGrid {
             ForEach(PreviewLookMode.allCases) { mode in
                 selectionButton(
                     title: mode.title,
@@ -2017,7 +1972,7 @@ private struct CameraSettingsView: View {
     }
 
     private var frameRateOptions: some View {
-        HStack(spacing: 8) {
+        settingsButtonGrid {
             ForEach(CameraManager.supportedFrameRates, id: \.self) { fps in
                 frameRateButton(
                     fps: fps,
@@ -2032,7 +1987,7 @@ private struct CameraSettingsView: View {
 
     private var photoSection: some View {
         settingsCard(title: "Photo") {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 settingsSubsection(title: "Default Lens") {
                     photoDefaultLensOptions
                 }
@@ -2057,6 +2012,12 @@ private struct CameraSettingsView: View {
 
                 settingsDivider()
 
+                settingsSubsection(title: "Monitoring") {
+                    monitoringOptions(for: .photo)
+                }
+
+                settingsDivider()
+
                 settingsSubsection(title: "Composition") {
                     photoCompositionOptions
                 }
@@ -2066,7 +2027,7 @@ private struct CameraSettingsView: View {
 
     private var photoDefaultLensOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+            settingsButtonGrid(minimumWidth: 88) {
                 ForEach(PhotoDefaultWideFocalLength.allCases) { focalLength in
                     selectionButton(
                         title: focalLength.title,
@@ -2093,7 +2054,7 @@ private struct CameraSettingsView: View {
             }
             .font(.system(size: 12, weight: .medium))
 
-            HStack(spacing: 8) {
+            settingsButtonGrid {
                 ForEach(PhotoCompanionFormat.allCases) { format in
                     selectionButton(
                         title: format.title,
@@ -2110,7 +2071,7 @@ private struct CameraSettingsView: View {
 
     private var photoResolutionOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+            settingsButtonGrid {
                 ForEach(PhotoResolutionOption.allCases) { option in
                     selectionButton(
                         title: option.title,
@@ -2127,7 +2088,7 @@ private struct CameraSettingsView: View {
 
     private var photoCompositionOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+            settingsButtonGrid {
                 selectionButton(
                     title: "Grid Off",
                     isSelected: !cameraManager.photoGridEnabled
@@ -2151,7 +2112,7 @@ private struct CameraSettingsView: View {
         let forcesLinkedInPhotoPro = cameraManager.photoProExposureEnabled
 
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+            settingsButtonGrid {
                 selectionButton(
                     title: "Separate",
                     isSelected: !cameraManager.effectivePhotoMeteringPointsLinked
@@ -2179,9 +2140,15 @@ private struct CameraSettingsView: View {
 
     private var videoSection: some View {
         settingsCard(title: "Video") {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 settingsSubsection(title: "Preview") {
                     previewOptions
+                }
+
+                settingsDivider()
+
+                settingsSubsection(title: "Monitoring") {
+                    monitoringOptions(for: .video)
                 }
 
                 settingsDivider()
@@ -2229,9 +2196,126 @@ private struct CameraSettingsView: View {
         }
     }
 
+    private func monitoringOptions(for mode: CaptureMode) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            subsectionLabel("Zebras")
+            zebraOptions(for: mode)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .frame(height: 1)
+
+            subsectionLabel("Focus Peaking")
+            focusPeakingOptions(for: mode)
+        }
+    }
+
+    private func zebraOptions(for mode: CaptureMode) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            settingsButtonGrid {
+                selectionButton(
+                    title: "Zebra Off",
+                    isSelected: !cameraManager.isZebraEnabled(for: mode)
+                ) {
+                    cameraManager.setZebraEnabled(false, for: mode)
+                }
+
+                selectionButton(
+                    title: "Zebra On",
+                    isSelected: cameraManager.isZebraEnabled(for: mode)
+                ) {
+                    cameraManager.setZebraEnabled(true, for: mode)
+                }
+            }
+
+            HStack {
+                Text("Threshold")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppTheme.textPrimary)
+                Spacer()
+                Text("\(cameraManager.zebraThresholdPercent(for: mode))%")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.accent)
+            }
+
+            Slider(
+                value: Binding(
+                    get: { Double(cameraManager.zebraThresholdPercent(for: mode)) },
+                    set: { cameraManager.setZebraThresholdPercent(Int($0.rounded()), for: mode) }
+                ),
+                in: 80...100,
+                step: 1
+            )
+            .tint(AppTheme.accent)
+
+            settingsButtonGrid {
+                ForEach(ZebraChannel.allCases) { channel in
+                    selectionButton(
+                        title: channel.title,
+                        isSelected: cameraManager.zebraChannelSetting(for: mode) == channel
+                    ) {
+                        cameraManager.selectZebraChannel(channel, for: mode)
+                    }
+                }
+            }
+
+            settingsSupportingText(
+                mode == .photo
+                ? "Photo zebras are independent from video and warn on the still-photo preview only."
+                : "Video zebras are independent from photo and stay tuned for the live monitoring preview."
+            )
+        }
+    }
+
+    private func focusPeakingOptions(for mode: CaptureMode) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            settingsButtonGrid {
+                selectionButton(
+                    title: "Peaking Off",
+                    isSelected: !cameraManager.isFocusPeakingEnabled(for: mode)
+                ) {
+                    cameraManager.setFocusPeakingEnabled(false, for: mode)
+                }
+
+                selectionButton(
+                    title: "Peaking On",
+                    isSelected: cameraManager.isFocusPeakingEnabled(for: mode)
+                ) {
+                    cameraManager.setFocusPeakingEnabled(true, for: mode)
+                }
+            }
+
+            HStack {
+                Text("Sensitivity")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppTheme.textPrimary)
+                Spacer()
+                Text("\(cameraManager.focusPeakingSensitivityPercent(for: mode))")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.accent)
+            }
+
+            Slider(
+                value: Binding(
+                    get: { Double(cameraManager.focusPeakingSensitivityPercent(for: mode)) },
+                    set: { cameraManager.setFocusPeakingSensitivityPercent(Int($0.rounded()), for: mode) }
+                ),
+                in: 20...100,
+                step: 1
+            )
+            .tint(Color(red: 0.26, green: 0.92, blue: 0.42))
+
+            settingsSupportingText(
+                mode == .photo
+                ? "Photo peaking highlights sharp edges on the still-photo preview. Useful while pulling manual focus before capture."
+                : "Video peaking highlights sharp edges on the live preview so focus pulls are easier to judge while monitoring."
+            )
+        }
+    }
+
     private var videoCompositionOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+            settingsButtonGrid {
                 selectionButton(
                     title: "Grid Off",
                     isSelected: !cameraManager.videoGridEnabled
@@ -2253,7 +2337,7 @@ private struct CameraSettingsView: View {
 
     private var videoCodecOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+            settingsButtonGrid {
                 ForEach(VideoRecordingCodec.allCases) { codec in
                     selectionButton(
                         title: codec.title,
@@ -2279,7 +2363,7 @@ private struct CameraSettingsView: View {
                 Spacer()
             }
 
-            HStack(spacing: 8) {
+            settingsButtonGrid {
                 ForEach(CaptureStabilizationMode.allCases) { mode in
                     selectionButton(
                         title: mode.title,
@@ -2306,7 +2390,7 @@ private struct CameraSettingsView: View {
 
     private var lockOptions: some View {
         VStack(spacing: 8) {
-            HStack(spacing: 8) {
+            settingsButtonGrid(minimumWidth: 132) {
                 lockChip(
                     title: "WB Lock REC",
                     isOn: cameraManager.whiteBalanceLockedDuringRecording
@@ -2326,7 +2410,7 @@ private struct CameraSettingsView: View {
 
     private var bitrateOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+            settingsButtonGrid(minimumWidth: 126) {
                 ForEach(CameraManager.supportedBitratesMbps, id: \.self) { bitrate in
                     selectionButton(
                         title: String(format: "%.0f Mb/s", bitrate),
@@ -2360,7 +2444,7 @@ private struct CameraSettingsView: View {
 
     private var videoAudioOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+            settingsButtonGrid {
                 ForEach(VideoAudioMode.allCases) { mode in
                     selectionButton(
                         title: mode.title,
@@ -2383,7 +2467,7 @@ private struct CameraSettingsView: View {
             }
             .font(.system(size: 12, weight: .medium))
 
-            HStack(spacing: 8) {
+            settingsButtonGrid {
                 selectionButton(
                     title: "Wind Off",
                     isSelected: !cameraManager.videoWindNoiseReductionEnabled
@@ -2425,37 +2509,50 @@ private struct CameraSettingsView: View {
 
     private func settingsCard<Content: View>(title: String,
                                              @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title.uppercased())
-                .font(.system(size: 13, weight: .black, design: .monospaced))
-                .tracking(1.2)
-                .foregroundStyle(AppTheme.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .center)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Capsule()
+                    .fill(AppTheme.accent.opacity(0.85))
+                    .frame(width: 22, height: 5)
+
+                Text(title.uppercased())
+                    .font(.system(size: 13, weight: .black, design: .monospaced))
+                    .tracking(1.2)
+                    .foregroundStyle(AppTheme.textPrimary)
+            }
 
             content()
         }
-        .padding(.horizontal, 15)
-        .padding(.vertical, 14)
-        .metalRoundedPanel(cornerRadius: 22)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color.black.opacity(0.42))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
     }
 
     private func subsectionLabel(_ title: String) -> some View {
         Text(title.uppercased())
             .font(.system(size: 10, weight: .black, design: .monospaced))
-            .tracking(0.9)
-            .foregroundStyle(AppTheme.textPrimary)
+            .tracking(1.0)
+            .foregroundStyle(AppTheme.textSecondary)
     }
 
     private func settingsSupportingText(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 11, weight: .medium))
+            .font(.system(size: 12, weight: .medium))
             .foregroundStyle(AppTheme.textSecondary)
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func settingsDivider() -> some View {
-        Rectangle()
-            .fill(Color.white.opacity(0.06))
-            .frame(height: 1)
+        Color.clear.frame(height: 2)
     }
 
     private func settingsSubsection<Content: View>(title: String,
@@ -2464,6 +2561,16 @@ private struct CameraSettingsView: View {
             subsectionLabel(title)
             content()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.black.opacity(0.28))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.05), lineWidth: 1)
+        )
     }
 
     private func selectionButton(title: String,
@@ -2471,13 +2578,25 @@ private struct CameraSettingsView: View {
                                  action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
                 .frame(maxWidth: .infinity)
-                .frame(height: 38)
+                .frame(height: 40)
                 .metalRoundedPanel(cornerRadius: 12, isActive: isSelected)
         }
         .buttonStyle(.plain)
+    }
+
+    private func settingsButtonGrid<Content: View>(minimumWidth: CGFloat = 110,
+                                                   @ViewBuilder content: () -> Content) -> some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: minimumWidth), spacing: 8, alignment: .leading)],
+            alignment: .leading,
+            spacing: 8
+        ) {
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func frameRateButton(fps: Int,

@@ -21,6 +21,8 @@ struct CameraPreviewView: UIViewRepresentable {
         view.setZebraEnabled(cameraManager.zebraEnabled)
         view.setZebraThreshold(cameraManager.zebraThreshold)
         view.setZebraChannel(cameraManager.zebraChannel)
+        view.setFocusPeakingEnabled(cameraManager.effectiveFocusPeakingEnabled)
+        view.setFocusPeakingSensitivity(cameraManager.focusPeakingSensitivityPercent)
         view.setCaptureMode(cameraManager.captureMode)
         view.setPhotoMeteringPointsLinked(cameraManager.effectivePhotoMeteringPointsLinked)
         view.setPhotoMeteringHandlesVisible(cameraManager.photoMeteringHandlesVisible)
@@ -62,6 +64,8 @@ struct CameraPreviewView: UIViewRepresentable {
         uiView.setZebraEnabled(cameraManager.zebraEnabled)
         uiView.setZebraThreshold(cameraManager.zebraThreshold)
         uiView.setZebraChannel(cameraManager.zebraChannel)
+        uiView.setFocusPeakingEnabled(cameraManager.effectiveFocusPeakingEnabled)
+        uiView.setFocusPeakingSensitivity(cameraManager.focusPeakingSensitivityPercent)
         uiView.setCaptureMode(cameraManager.captureMode)
         uiView.setPhotoMeteringPointsLinked(cameraManager.effectivePhotoMeteringPointsLinked)
         uiView.setPhotoMeteringHandlesVisible(cameraManager.photoMeteringHandlesVisible)
@@ -298,6 +302,7 @@ final class PreviewView: UIView {
 
     private let previewSurface = MTKView(frame: .zero)
     private let zebraSurface = MTKView(frame: .zero)
+    private let focusPeakingSurface = MTKView(frame: .zero)
     private let conversionPreviewLayer = AVCaptureVideoPreviewLayer()
     private let photoFocusHandleView = PhotoMeteringHandleView(style: .focus)
     private let photoExposureHandleView = PhotoMeteringHandleView(style: .exposure)
@@ -308,11 +313,13 @@ final class PreviewView: UIView {
     private var previewFrameCancellable: AnyCancellable?
     private var previewRenderer: MetalPreviewRenderer?
     private var zebraRenderer: ZebraOverlayRenderer?
+    private var focusPeakingRenderer: FocusPeakingOverlayRenderer?
     private var currentPreviewRotationAngle: CGFloat = 0
     private var currentPreviewLookMode: PreviewLookMode = .log
     private var currentCaptureMode: CaptureMode = .video
     private var isPreviewSuspended = false
     private var isZebraEnabled = false
+    private var isFocusPeakingEnabled = false
     private var photoMeteringPointsLinked = false
     private var photoFocusPreviewPoint: CGPoint?
     private var photoExposurePreviewPoint: CGPoint?
@@ -347,6 +354,7 @@ final class PreviewView: UIView {
         layer.masksToBounds = true
         setupPreviewSurface()
         setupZebraSurface()
+        setupFocusPeakingSurface()
         setupConversionLayer()
         setupPhotoMeteringHandles()
         setupGestures()
@@ -358,6 +366,7 @@ final class PreviewView: UIView {
         layer.masksToBounds = true
         setupPreviewSurface()
         setupZebraSurface()
+        setupFocusPeakingSurface()
         setupConversionLayer()
         setupPhotoMeteringHandles()
         setupGestures()
@@ -407,6 +416,7 @@ final class PreviewView: UIView {
             guard !self.isPreviewSuspended else { return }
             self.previewRenderer?.enqueue(frame)
             self.zebraRenderer?.enqueue(frame)
+            self.focusPeakingRenderer?.enqueue(frame)
         }
         applyConnectionConfiguration(from: cameraManager)
     }
@@ -415,6 +425,7 @@ final class PreviewView: UIView {
         currentPreviewLookMode = mode
         previewRenderer?.setPreviewLookMode(mode)
         zebraRenderer?.setPreviewLookMode(mode)
+        focusPeakingRenderer?.setPreviewLookMode(mode)
         updateVisiblePreviewMode()
     }
 
@@ -465,14 +476,32 @@ final class PreviewView: UIView {
         zebraRenderer?.setChannel(channel)
     }
 
+    func setFocusPeakingEnabled(_ isEnabled: Bool) {
+        guard isFocusPeakingEnabled != isEnabled else { return }
+        isFocusPeakingEnabled = isEnabled
+        focusPeakingSurface.isHidden = !isEnabled
+        focusPeakingRenderer?.setEnabled(isEnabled)
+        if isEnabled {
+            bringSubviewToFront(focusPeakingSurface)
+        } else {
+            focusPeakingRenderer?.clear()
+        }
+    }
+
+    func setFocusPeakingSensitivity(_ sensitivityPercent: Int) {
+        focusPeakingRenderer?.setSensitivityPercent(sensitivityPercent)
+    }
+
     func setPreviewSuspended(_ isSuspended: Bool) {
         guard isPreviewSuspended != isSuspended else { return }
         isPreviewSuspended = isSuspended
         previewSurface.isPaused = isSuspended
         zebraSurface.isPaused = isSuspended
+        focusPeakingSurface.isPaused = isSuspended
         if isSuspended {
             previewRenderer?.clear()
             zebraRenderer?.clear()
+            focusPeakingRenderer?.clear()
         }
     }
 
@@ -500,8 +529,24 @@ final class PreviewView: UIView {
         bringSubviewToFront(zebraSurface)
     }
 
+    private func setupFocusPeakingSurface() {
+        focusPeakingSurface.clipsToBounds = true
+        focusPeakingSurface.isUserInteractionEnabled = false
+        focusPeakingSurface.isOpaque = false
+        focusPeakingSurface.backgroundColor = .clear
+        focusPeakingSurface.clearColor = MTLClearColorMake(0, 0, 0, 0)
+        focusPeakingSurface.frame = bounds
+        focusPeakingRenderer = FocusPeakingOverlayRenderer(view: focusPeakingSurface)
+        focusPeakingSurface.isHidden = true
+        addSubview(focusPeakingSurface)
+        bringSubviewToFront(focusPeakingSurface)
+    }
+
     private func setupConversionLayer() {
         conversionPreviewLayer.videoGravity = .resizeAspectFill
+        // Keep the system preview layer around for tap-to-focus coordinate
+        // conversion and rotation metadata, but render the visible preview from
+        // the sample-buffer path so photo mode matches capture more closely.
         conversionPreviewLayer.isHidden = true
         layer.insertSublayer(conversionPreviewLayer, at: 0)
     }
@@ -630,6 +675,7 @@ final class PreviewView: UIView {
 
         previewSurface.transform = .identity
         zebraSurface.transform = .identity
+        focusPeakingSurface.transform = .identity
         previewSurface.frame = CGRect(
             x: (bounds.width - rotatedSize.width) / 2,
             y: (bounds.height - rotatedSize.height) / 2,
@@ -642,6 +688,12 @@ final class PreviewView: UIView {
             width: rotatedSize.width,
             height: rotatedSize.height
         )
+        focusPeakingSurface.frame = CGRect(
+            x: (bounds.width - rotatedSize.width) / 2,
+            y: (bounds.height - rotatedSize.height) / 2,
+            width: rotatedSize.width,
+            height: rotatedSize.height
+        )
 
         var transform = CGAffineTransform(rotationAngle: currentPreviewRotationAngle * (.pi / 180))
         if activeDevice?.position == .front {
@@ -649,18 +701,22 @@ final class PreviewView: UIView {
         }
         previewSurface.transform = transform
         zebraSurface.transform = transform
+        focusPeakingSurface.transform = transform
     }
 
     private func updateVisiblePreviewMode() {
-        let showMetalPreview = previewRenderer != nil && currentCaptureMode == .video
-        previewSurface.isHidden = !showMetalPreview
+        let showSampleBufferPreview = previewRenderer != nil
+        previewSurface.isHidden = !showSampleBufferPreview
         previewSurface.alpha = 1
-        conversionPreviewLayer.isHidden = showMetalPreview
-        if showMetalPreview {
+        conversionPreviewLayer.isHidden = showSampleBufferPreview
+        if showSampleBufferPreview {
             bringSubviewToFront(previewSurface)
         }
         if isZebraEnabled {
             bringSubviewToFront(zebraSurface)
+        }
+        if isFocusPeakingEnabled {
+            bringSubviewToFront(focusPeakingSurface)
         }
         if currentCaptureMode == .photo {
             bringSubviewToFront(photoFocusHandleView)

@@ -384,6 +384,16 @@ final class CameraManager: NSObject, ObservableObject {
         static let zebraEnabled = "camera.zebraEnabled"
         static let zebraThresholdPercent = "camera.zebraThresholdPercent"
         static let zebraChannel = "camera.zebraChannel"
+        static let videoZebraEnabled = "camera.videoZebraEnabled"
+        static let videoZebraThresholdPercent = "camera.videoZebraThresholdPercent"
+        static let videoZebraChannel = "camera.videoZebraChannel"
+        static let photoZebraEnabled = "camera.photoZebraEnabled"
+        static let photoZebraThresholdPercent = "camera.photoZebraThresholdPercent"
+        static let photoZebraChannel = "camera.photoZebraChannel"
+        static let videoFocusPeakingEnabled = "camera.videoFocusPeakingEnabled"
+        static let videoFocusPeakingSensitivityPercent = "camera.videoFocusPeakingSensitivityPercent"
+        static let photoFocusPeakingEnabled = "camera.photoFocusPeakingEnabled"
+        static let photoFocusPeakingSensitivityPercent = "camera.photoFocusPeakingSensitivityPercent"
         static let photoGridEnabled = "camera.photoGridEnabled"
         static let photoMeteringPointsLinked = "camera.photoMeteringPointsLinked"
         static let videoGridEnabled = "camera.videoGridEnabled"
@@ -464,14 +474,35 @@ final class CameraManager: NSObject, ObservableObject {
             UserDefaults.standard.set(previewLookMode.rawValue, forKey: SettingsKey.previewLookMode)
         }
     }
-    @Published var zebraEnabled = false {
-        didSet { UserDefaults.standard.set(zebraEnabled, forKey: SettingsKey.zebraEnabled) }
+    @Published var videoZebraEnabled = false {
+        didSet { UserDefaults.standard.set(videoZebraEnabled, forKey: SettingsKey.videoZebraEnabled) }
     }
-    @Published var zebraThresholdPercent = 95 {
-        didSet { UserDefaults.standard.set(zebraThresholdPercent, forKey: SettingsKey.zebraThresholdPercent) }
+    @Published var videoZebraThresholdPercent = 95 {
+        didSet { UserDefaults.standard.set(videoZebraThresholdPercent, forKey: SettingsKey.videoZebraThresholdPercent) }
     }
-    @Published var zebraChannel: ZebraChannel = .red {
-        didSet { UserDefaults.standard.set(zebraChannel.rawValue, forKey: SettingsKey.zebraChannel) }
+    @Published var videoZebraChannel: ZebraChannel = .red {
+        didSet { UserDefaults.standard.set(videoZebraChannel.rawValue, forKey: SettingsKey.videoZebraChannel) }
+    }
+    @Published var photoZebraEnabled = false {
+        didSet { UserDefaults.standard.set(photoZebraEnabled, forKey: SettingsKey.photoZebraEnabled) }
+    }
+    @Published var photoZebraThresholdPercent = 95 {
+        didSet { UserDefaults.standard.set(photoZebraThresholdPercent, forKey: SettingsKey.photoZebraThresholdPercent) }
+    }
+    @Published var photoZebraChannel: ZebraChannel = .red {
+        didSet { UserDefaults.standard.set(photoZebraChannel.rawValue, forKey: SettingsKey.photoZebraChannel) }
+    }
+    @Published var videoFocusPeakingEnabled = false {
+        didSet { UserDefaults.standard.set(videoFocusPeakingEnabled, forKey: SettingsKey.videoFocusPeakingEnabled) }
+    }
+    @Published var videoFocusPeakingSensitivityPercent = 55 {
+        didSet { UserDefaults.standard.set(videoFocusPeakingSensitivityPercent, forKey: SettingsKey.videoFocusPeakingSensitivityPercent) }
+    }
+    @Published var photoFocusPeakingEnabled = false {
+        didSet { UserDefaults.standard.set(photoFocusPeakingEnabled, forKey: SettingsKey.photoFocusPeakingEnabled) }
+    }
+    @Published var photoFocusPeakingSensitivityPercent = 55 {
+        didSet { UserDefaults.standard.set(photoFocusPeakingSensitivityPercent, forKey: SettingsKey.photoFocusPeakingSensitivityPercent) }
     }
     @Published var photoGridEnabled = false {
         didSet { UserDefaults.standard.set(photoGridEnabled, forKey: SettingsKey.photoGridEnabled) }
@@ -648,8 +679,32 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    var zebraEnabled: Bool {
+        isZebraEnabled(for: captureMode)
+    }
+
+    var zebraThresholdPercent: Int {
+        zebraThresholdPercent(for: captureMode)
+    }
+
     var zebraThreshold: Float {
-        Float(zebraThresholdPercent) / 100
+        Float(zebraThresholdPercent(for: captureMode)) / 100
+    }
+
+    var zebraChannel: ZebraChannel {
+        zebraChannelSetting(for: captureMode)
+    }
+
+    var focusPeakingEnabled: Bool {
+        isFocusPeakingEnabled(for: captureMode)
+    }
+
+    var focusPeakingSensitivityPercent: Int {
+        focusPeakingSensitivityPercent(for: captureMode)
+    }
+
+    var effectiveFocusPeakingEnabled: Bool {
+        focusPeakingEnabled && manualFocusEnabled && supportsManualFocus
     }
 
     var isCurrentProExposureEnabled: Bool {
@@ -810,6 +865,8 @@ final class CameraManager: NSObject, ObservableObject {
     private var activeVideoStabilizationObservation: NSKeyValueObservation?
     private var focusFeedbackDismissWorkItem: DispatchWorkItem?
     private var pendingFocusLockWorkItem: DispatchWorkItem?
+    private var pendingPhotoManualExposureRefreshWorkItem: DispatchWorkItem?
+    private var pendingManualWhiteBalanceRefreshWorkItem: DispatchWorkItem?
     private var statusMessageDismissWorkItem: DispatchWorkItem?
     private var lastAutoControlReadbackTimestamp: TimeInterval = 0
     private var recordingTimer: Timer?
@@ -1011,6 +1068,7 @@ final class CameraManager: NSObject, ObservableObject {
             } catch {
                 self.presentStatusMessage("Exposure mode update failed.")
             }
+            self.schedulePhotoManualExposureRefreshIfNeeded()
             self.updateProExposureAutomationState()
         }
     }
@@ -1026,6 +1084,7 @@ final class CameraManager: NSObject, ObservableObject {
             } catch {
                 self.presentStatusMessage("White balance update failed.")
             }
+            self.scheduleManualWhiteBalanceRefreshIfNeeded(for: mode)
         }
     }
 
@@ -1169,12 +1228,96 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    func setZebraThresholdPercent(_ value: Int) {
-        zebraThresholdPercent = min(max(value, 80), 100)
+    func isZebraEnabled(for mode: CaptureMode) -> Bool {
+        switch mode {
+        case .video:
+            return videoZebraEnabled
+        case .photo:
+            return photoZebraEnabled
+        }
     }
 
-    func selectZebraChannel(_ channel: ZebraChannel) {
-        zebraChannel = channel
+    func zebraThresholdPercent(for mode: CaptureMode) -> Int {
+        switch mode {
+        case .video:
+            return videoZebraThresholdPercent
+        case .photo:
+            return photoZebraThresholdPercent
+        }
+    }
+
+    func zebraChannelSetting(for mode: CaptureMode) -> ZebraChannel {
+        switch mode {
+        case .video:
+            return videoZebraChannel
+        case .photo:
+            return photoZebraChannel
+        }
+    }
+
+    func setZebraEnabled(_ isEnabled: Bool, for mode: CaptureMode? = nil) {
+        switch mode ?? captureMode {
+        case .video:
+            videoZebraEnabled = isEnabled
+        case .photo:
+            photoZebraEnabled = isEnabled
+        }
+    }
+
+    func setZebraThresholdPercent(_ value: Int, for mode: CaptureMode? = nil) {
+        let clampedValue = min(max(value, 80), 100)
+        switch mode ?? captureMode {
+        case .video:
+            videoZebraThresholdPercent = clampedValue
+        case .photo:
+            photoZebraThresholdPercent = clampedValue
+        }
+    }
+
+    func selectZebraChannel(_ channel: ZebraChannel, for mode: CaptureMode? = nil) {
+        switch mode ?? captureMode {
+        case .video:
+            videoZebraChannel = channel
+        case .photo:
+            photoZebraChannel = channel
+        }
+    }
+
+    func isFocusPeakingEnabled(for mode: CaptureMode) -> Bool {
+        switch mode {
+        case .video:
+            return videoFocusPeakingEnabled
+        case .photo:
+            return photoFocusPeakingEnabled
+        }
+    }
+
+    func focusPeakingSensitivityPercent(for mode: CaptureMode) -> Int {
+        switch mode {
+        case .video:
+            return videoFocusPeakingSensitivityPercent
+        case .photo:
+            return photoFocusPeakingSensitivityPercent
+        }
+    }
+
+    func setFocusPeakingEnabled(_ isEnabled: Bool, for mode: CaptureMode? = nil) {
+        switch mode ?? captureMode {
+        case .video:
+            videoFocusPeakingEnabled = isEnabled
+        case .photo:
+            photoFocusPeakingEnabled = isEnabled
+        }
+    }
+
+    func setFocusPeakingSensitivityPercent(_ value: Int, for mode: CaptureMode? = nil) {
+        let clampedValue = min(max(value, 20), 100)
+        switch mode ?? captureMode {
+        case .video:
+            videoFocusPeakingSensitivityPercent = clampedValue
+        case .photo:
+            photoFocusPeakingSensitivityPercent = clampedValue
+        }
     }
 
     private func idealShutterSpeedDenominator(for frameRate: Int) -> Int {
@@ -1344,6 +1487,89 @@ final class CameraManager: NSObject, ObservableObject {
         } catch {
             presentStatusMessage("Photo white balance update failed.")
         }
+    }
+
+    private func scheduleManualWhiteBalanceRefreshIfNeeded(for mode: CaptureMode? = nil) {
+        pendingManualWhiteBalanceRefreshWorkItem?.cancel()
+        pendingManualWhiteBalanceRefreshWorkItem = nil
+
+        let targetMode = mode ?? captureMode
+        guard usesManualWhiteBalance(for: targetMode) else { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.usesManualWhiteBalance(for: targetMode),
+                  let device = self.videoInput?.device ?? self.activeDevice else {
+                return
+            }
+
+            let targetTemperature = self.whiteBalanceTemperature(for: targetMode)
+            let currentTemperature = Double(
+                device.temperatureAndTintValues(for: device.deviceWhiteBalanceGains).temperature
+            )
+
+            guard device.whiteBalanceMode != .locked ||
+                    abs(currentTemperature - targetTemperature) > 40 else {
+                return
+            }
+
+            do {
+                try device.lockForConfiguration()
+                self.applyManualWhiteBalance(on: device, mode: targetMode)
+                device.unlockForConfiguration()
+            } catch {
+                self.presentStatusMessage("White balance refresh failed.")
+            }
+        }
+
+        pendingManualWhiteBalanceRefreshWorkItem = workItem
+        sessionQueue.asyncAfter(deadline: .now() + .milliseconds(180), execute: workItem)
+    }
+
+    private func schedulePhotoManualExposureRefreshIfNeeded() {
+        pendingPhotoManualExposureRefreshWorkItem?.cancel()
+        pendingPhotoManualExposureRefreshWorkItem = nil
+
+        guard captureMode == .photo,
+              photoProExposureEnabled,
+              photoProExposureMode == .manual else {
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.captureMode == .photo,
+                  self.photoProExposureEnabled,
+                  self.photoProExposureMode == .manual,
+                  let device = self.videoInput?.device ?? self.activeDevice,
+                  let manualExposure = self.photoManualExposureValues(for: device) else {
+                return
+            }
+
+            let currentDurationSeconds = CMTimeGetSeconds(device.exposureDuration)
+            let targetDurationSeconds = CMTimeGetSeconds(manualExposure.duration)
+            let durationMatches = abs(currentDurationSeconds - targetDurationSeconds) < 0.0005
+            let isoMatches = abs(device.iso - manualExposure.iso) < 0.5
+
+            guard device.exposureMode != .custom || !durationMatches || !isoMatches else {
+                return
+            }
+
+            do {
+                try device.lockForConfiguration()
+                device.setExposureModeCustom(
+                    duration: manualExposure.duration,
+                    iso: manualExposure.iso,
+                    completionHandler: nil
+                )
+                device.unlockForConfiguration()
+            } catch {
+                self.presentStatusMessage("Photo exposure refresh failed.")
+            }
+        }
+
+        pendingPhotoManualExposureRefreshWorkItem = workItem
+        sessionQueue.asyncAfter(deadline: .now() + .milliseconds(180), execute: workItem)
     }
 
     private func updateProExposureAutomationState() {
@@ -1685,32 +1911,10 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         let settings: AVCapturePhotoSettings
-        if photoProExposureEnabled,
-           let device = videoInput?.device ?? activeDevice,
-           let manualExposure = photoManualExposureValues(for: device) {
-            let bracketSetting = AVCaptureManualExposureBracketedStillImageSettings.manualExposureSettings(
-                exposureDuration: manualExposure.duration,
-                iso: manualExposure.iso
-            )
-
-            if let processedConfiguration {
-                settings = AVCapturePhotoBracketSettings(
-                    rawPixelFormatType: rawPixelType,
-                    rawFileType: .dng,
-                    processedFormat: processedConfiguration.format,
-                    processedFileType: processedConfiguration.fileType,
-                    bracketedSettings: [bracketSetting]
-                )
-            } else {
-                settings = AVCapturePhotoBracketSettings(
-                    rawPixelFormatType: rawPixelType,
-                    rawFileType: .dng,
-                    processedFormat: nil,
-                    processedFileType: nil,
-                    bracketedSettings: [bracketSetting]
-                )
-            }
-        } else if let processedConfiguration {
+        if let processedConfiguration {
+            // Use the current device manual exposure state for RAW capture rather
+            // than an extra bracket override so the captured frame follows the
+            // same exposure path as the live preview.
             settings = AVCapturePhotoSettings(
                 rawPixelFormatType: rawPixelType,
                 rawFileType: .dng,
@@ -2458,6 +2662,8 @@ final class CameraManager: NSObject, ObservableObject {
 
                 updatePhotoOutputConfiguration(for: device, inConfiguration: inConfiguration)
                 updateSupportedStabilizationModes(for: device.activeFormat)
+                schedulePhotoManualExposureRefreshIfNeeded()
+                scheduleManualWhiteBalanceRefreshIfNeeded(for: targetMode)
 
                 DispatchQueue.main.async {
                     self.activeDevice = device
@@ -2496,6 +2702,8 @@ final class CameraManager: NSObject, ObservableObject {
 
             updatePhotoOutputConfiguration(for: device, inConfiguration: inConfiguration)
             updateSupportedStabilizationModes(for: selection.format)
+            schedulePhotoManualExposureRefreshIfNeeded()
+            scheduleManualWhiteBalanceRefreshIfNeeded(for: targetMode)
             updateProExposureAutomationState()
 
             DispatchQueue.main.async {
@@ -3417,17 +3625,73 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
 
-        if defaults.object(forKey: SettingsKey.zebraEnabled) != nil {
-            zebraEnabled = defaults.bool(forKey: SettingsKey.zebraEnabled)
+        let legacyZebraEnabled = defaults.object(forKey: SettingsKey.zebraEnabled) != nil
+            ? defaults.bool(forKey: SettingsKey.zebraEnabled)
+            : nil
+        let legacyZebraThresholdPercent = defaults.object(forKey: SettingsKey.zebraThresholdPercent) != nil
+            ? min(max(defaults.integer(forKey: SettingsKey.zebraThresholdPercent), 80), 100)
+            : nil
+        let legacyZebraChannel = defaults.string(forKey: SettingsKey.zebraChannel)
+            .flatMap(ZebraChannel.init(rawValue:))
+
+        if defaults.object(forKey: SettingsKey.videoZebraEnabled) != nil {
+            videoZebraEnabled = defaults.bool(forKey: SettingsKey.videoZebraEnabled)
+        } else if let legacyZebraEnabled {
+            videoZebraEnabled = legacyZebraEnabled
+            defaults.set(legacyZebraEnabled, forKey: SettingsKey.videoZebraEnabled)
         }
 
-        if defaults.object(forKey: SettingsKey.zebraThresholdPercent) != nil {
-            zebraThresholdPercent = min(max(defaults.integer(forKey: SettingsKey.zebraThresholdPercent), 80), 100)
+        if defaults.object(forKey: SettingsKey.photoZebraEnabled) != nil {
+            photoZebraEnabled = defaults.bool(forKey: SettingsKey.photoZebraEnabled)
+        } else if let legacyZebraEnabled {
+            photoZebraEnabled = legacyZebraEnabled
+            defaults.set(legacyZebraEnabled, forKey: SettingsKey.photoZebraEnabled)
         }
 
-        if let rawZebraChannel = defaults.string(forKey: SettingsKey.zebraChannel),
-           let zebraChannel = ZebraChannel(rawValue: rawZebraChannel) {
-            self.zebraChannel = zebraChannel
+        if defaults.object(forKey: SettingsKey.videoZebraThresholdPercent) != nil {
+            videoZebraThresholdPercent = min(max(defaults.integer(forKey: SettingsKey.videoZebraThresholdPercent), 80), 100)
+        } else if let legacyZebraThresholdPercent {
+            videoZebraThresholdPercent = legacyZebraThresholdPercent
+            defaults.set(legacyZebraThresholdPercent, forKey: SettingsKey.videoZebraThresholdPercent)
+        }
+
+        if defaults.object(forKey: SettingsKey.photoZebraThresholdPercent) != nil {
+            photoZebraThresholdPercent = min(max(defaults.integer(forKey: SettingsKey.photoZebraThresholdPercent), 80), 100)
+        } else if let legacyZebraThresholdPercent {
+            photoZebraThresholdPercent = legacyZebraThresholdPercent
+            defaults.set(legacyZebraThresholdPercent, forKey: SettingsKey.photoZebraThresholdPercent)
+        }
+
+        if let rawVideoZebraChannel = defaults.string(forKey: SettingsKey.videoZebraChannel),
+           let videoZebraChannel = ZebraChannel(rawValue: rawVideoZebraChannel) {
+            self.videoZebraChannel = videoZebraChannel
+        } else if let legacyZebraChannel {
+            videoZebraChannel = legacyZebraChannel
+            defaults.set(legacyZebraChannel.rawValue, forKey: SettingsKey.videoZebraChannel)
+        }
+
+        if let rawPhotoZebraChannel = defaults.string(forKey: SettingsKey.photoZebraChannel),
+           let photoZebraChannel = ZebraChannel(rawValue: rawPhotoZebraChannel) {
+            self.photoZebraChannel = photoZebraChannel
+        } else if let legacyZebraChannel {
+            photoZebraChannel = legacyZebraChannel
+            defaults.set(legacyZebraChannel.rawValue, forKey: SettingsKey.photoZebraChannel)
+        }
+
+        if defaults.object(forKey: SettingsKey.videoFocusPeakingEnabled) != nil {
+            videoFocusPeakingEnabled = defaults.bool(forKey: SettingsKey.videoFocusPeakingEnabled)
+        }
+
+        if defaults.object(forKey: SettingsKey.photoFocusPeakingEnabled) != nil {
+            photoFocusPeakingEnabled = defaults.bool(forKey: SettingsKey.photoFocusPeakingEnabled)
+        }
+
+        if defaults.object(forKey: SettingsKey.videoFocusPeakingSensitivityPercent) != nil {
+            videoFocusPeakingSensitivityPercent = min(max(defaults.integer(forKey: SettingsKey.videoFocusPeakingSensitivityPercent), 20), 100)
+        }
+
+        if defaults.object(forKey: SettingsKey.photoFocusPeakingSensitivityPercent) != nil {
+            photoFocusPeakingSensitivityPercent = min(max(defaults.integer(forKey: SettingsKey.photoFocusPeakingSensitivityPercent), 20), 100)
         }
 
         if defaults.object(forKey: SettingsKey.photoGridEnabled) != nil {
