@@ -990,10 +990,11 @@ final class CameraManager: NSObject, ObservableObject {
             if isEnabled, proExposureMode != .manual {
                 proExposureMode = .manual
             }
-            if !isEnabled {
-                setWhiteBalanceAuto()
-                setManualFocusEnabled(false)
-            }
+        }
+
+        if !isEnabled {
+            setWhiteBalanceAuto()
+            setManualFocusEnabled(false)
         }
         syncExposureConfiguration()
         if captureMode == .photo {
