@@ -11,15 +11,18 @@ enum PreviewYCbCrMatrix {
 final class PreviewFrame {
     let pixelBuffer: CVPixelBuffer
     let profile: CaptureColorProfile
+    let captureMode: CaptureMode
     let yCbCrMatrix: PreviewYCbCrMatrix
     let isFullRange: Bool
 
     init(pixelBuffer: CVPixelBuffer,
          profile: CaptureColorProfile,
+         captureMode: CaptureMode,
          yCbCrMatrix: PreviewYCbCrMatrix,
          isFullRange: Bool) {
         self.pixelBuffer = pixelBuffer
         self.profile = profile
+        self.captureMode = captureMode
         self.yCbCrMatrix = yCbCrMatrix
         self.isFullRange = isFullRange
     }
@@ -33,6 +36,7 @@ final class MetalPreviewRenderer: NSObject, MTKViewDelegate {
     private let lutProcessor = PreviewLUTProcessor()
     private let stateQueue = DispatchQueue(label: "com.logcamera.metalPreviewState")
     private let rec709ColorSpace = CGColorSpace(name: CGColorSpace.itur_709) ?? CGColorSpace(name: CGColorSpace.sRGB)!
+    private static let photoRawPreviewExposureEV = -0.58
 
     private var latestFrame: PreviewFrame?
     private var previewLookMode: PreviewLookMode = .log
@@ -128,6 +132,15 @@ final class MetalPreviewRenderer: NSObject, MTKViewDelegate {
 
     private func makeRenderRequest(for frame: PreviewFrame, lookMode: PreviewLookMode) -> RenderRequest? {
         let pixelBuffer = frame.pixelBuffer
+
+        if frame.captureMode == .photo {
+            return RenderRequest(
+                image: photoRawMatchedImage(for: pixelBuffer),
+                context: managedContext,
+                outputColorSpace: rec709ColorSpace
+            )
+        }
+
         let rawImage = CIImage(
             cvPixelBuffer: pixelBuffer,
             options: [
@@ -138,15 +151,8 @@ final class MetalPreviewRenderer: NSObject, MTKViewDelegate {
 
         switch lookMode {
         case .log:
-            var options: [CIImageOption: Any] = [
-                .applyCleanAperture: true
-            ]
-            if let sourceColorSpace = sourceColorSpace(for: pixelBuffer) {
-                options[.colorSpace] = sourceColorSpace
-            }
-            let managedImage = CIImage(cvPixelBuffer: pixelBuffer, options: options)
             return RenderRequest(
-                image: managedImage,
+                image: colorManagedImage(for: pixelBuffer),
                 context: managedContext,
                 outputColorSpace: rec709ColorSpace
             )
@@ -168,11 +174,33 @@ final class MetalPreviewRenderer: NSObject, MTKViewDelegate {
             }
 
             return RenderRequest(
-                image: rawImage,
-                context: cubeContext,
+                image: colorManagedImage(for: pixelBuffer),
+                context: managedContext,
                 outputColorSpace: rec709ColorSpace
             )
         }
+    }
+
+    private func photoRawMatchedImage(for pixelBuffer: CVPixelBuffer) -> CIImage {
+        // ProRAW/DNG is rendered later through Apple's RAW pipeline, while live
+        // preview arrives as a processed video sample buffer. In photo mode, use
+        // the buffer's propagated color metadata and a conservative exposure
+        // offset so the live image tracks the default DNG render more closely.
+        colorManagedImage(for: pixelBuffer)
+            .applyingFilter(
+                "CIExposureAdjust",
+                parameters: [kCIInputEVKey: Self.photoRawPreviewExposureEV]
+            )
+    }
+
+    private func colorManagedImage(for pixelBuffer: CVPixelBuffer) -> CIImage {
+        var options: [CIImageOption: Any] = [
+            .applyCleanAperture: true
+        ]
+        if let sourceColorSpace = sourceColorSpace(for: pixelBuffer) {
+            options[.colorSpace] = sourceColorSpace
+        }
+        return CIImage(cvPixelBuffer: pixelBuffer, options: options)
     }
 
     private func sourceColorSpace(for pixelBuffer: CVPixelBuffer) -> CGColorSpace? {

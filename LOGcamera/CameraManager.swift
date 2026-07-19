@@ -447,6 +447,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var photoDefaultWideFocalLength: PhotoDefaultWideFocalLength = .mm24 {
         didSet { UserDefaults.standard.set(photoDefaultWideFocalLength.rawValue, forKey: SettingsKey.photoDefaultWideFocalLength) }
     }
+    @Published private(set) var isSwitchingCaptureMode = false
 
     @Published var captureMode: CaptureMode = .video {
         didSet { UserDefaults.standard.set(captureMode.rawValue, forKey: SettingsKey.captureMode) }
@@ -460,7 +461,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var whiteBalanceLockedDuringRecording = true {
         didSet { UserDefaults.standard.set(whiteBalanceLockedDuringRecording, forKey: SettingsKey.whiteBalanceLockedDuringRecording) }
     }
-    @Published var exposureLockedDuringRecording = true {
+    @Published var exposureLockedDuringRecording = false {
         didSet { UserDefaults.standard.set(exposureLockedDuringRecording, forKey: SettingsKey.exposureLockedDuringRecording) }
     }
     @Published var selectedStabilizationMode: CaptureStabilizationMode = .off {
@@ -790,6 +791,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     var canTriggerCapture: Bool {
+        guard !isSwitchingCaptureMode else { return false }
         switch captureMode {
         case .video:
             return canRecord || isRecording
@@ -799,7 +801,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     var isCaptureBusy: Bool {
-        isRecording || isPhotoCaptureInProgress
+        isRecording || isPhotoCaptureInProgress || isSwitchingCaptureMode
     }
 
     var whiteBalanceLabel: String {
@@ -871,6 +873,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var lastAutoControlReadbackTimestamp: TimeInterval = 0
     private var recordingTimer: Timer?
     private let writerQueue = DispatchQueue(label: "com.logcamera.writerQueue")
+    private let previewQueue = DispatchQueue(label: "com.logcamera.previewQueue", qos: .userInteractive)
     private var assetWriter: AVAssetWriter?
     private var videoWriterInput: AVAssetWriterInput?
     private var audioWriterInput: AVAssetWriterInput?
@@ -879,6 +882,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var recordingSourceStartTime: CMTime?
     private var exactVideoFrameCount: Int64 = 0
     private var pendingRecordingLeadInStartTime: CMTime?
+    private var lastPreviewFrameDispatchTime: TimeInterval = 0
     private var currentCaptureRotationAngle: CGFloat = 0
     private let previewFrameSubject = PassthroughSubject<PreviewFrame, Never>()
     private var proExposureAutomationTimer: DispatchSourceTimer?
@@ -928,6 +932,10 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func selectStabilizationMode(_ mode: CaptureStabilizationMode) {
+        guard !isRecording else {
+            presentStatusMessage("Stop recording before changing stabilization.")
+            return
+        }
         guard captureMode == .photo || supportedStabilizationModes.contains(mode) else {
             return
         }
@@ -1158,38 +1166,73 @@ final class CameraManager: NSObject, ObservableObject {
 
     func switchCaptureMode() {
         guard !isCaptureBusy else { return }
-        let nextMode: CaptureMode = captureMode == .video ? .photo : .video
+        let previousMode = captureMode
+        let nextMode: CaptureMode = previousMode == .video ? .photo : .video
+        isSwitchingCaptureMode = true
         captureMode = nextMode
         syncPublishedExposureBiasState(for: nextMode)
         syncPublishedManualFocusState(for: nextMode)
+
         sessionQueue.async {
             self.stopProExposureAutomation()
-            guard self.isSessionConfigured else { return }
+            self.cancelPendingCaptureModeWork()
+
+            guard self.isSessionConfigured else {
+                self.finishCaptureModeSwitch(to: nextMode)
+                return
+            }
+
             let currentDevice = self.videoInput?.device ?? self.activeDevice
+            let previousLens = currentDevice.flatMap { self.resolvedLensOption(for: $0, mode: previousMode) }
             let preferredLens = nextMode == .video
                 ? self.defaultVideoLensOption(from: self.lensOptions)
                 : nil
             let targetDevice = preferredLens.flatMap { self.deviceRegistry[$0.id] } ?? currentDevice
+
+            var resolvedMode = previousMode
             self.session.beginConfiguration()
+            defer {
+                self.session.commitConfiguration()
+                self.configureOutput(mode: resolvedMode)
+                self.finishCaptureModeSwitch(to: resolvedMode)
+            }
+
             self.session.sessionPreset = nextMode == .photo ? .photo : .inputPriority
             if let currentInput = self.videoInput {
                 self.session.removeInput(currentInput)
                 self.videoInput = nil
             }
+
             if let targetDevice {
-                guard self.installVideoInput(device: targetDevice) else {
+                guard self.installVideoInput(device: targetDevice, mode: nextMode) else {
                     self.presentStatusMessage("Failed to reconfigure camera for \(nextMode.title.lowercased()) mode.")
-                    self.session.commitConfiguration()
+
+                    self.session.sessionPreset = previousMode == .photo ? .photo : .inputPriority
+                    if let currentDevice,
+                       self.installVideoInput(device: currentDevice, mode: previousMode) {
+                        self.configureDeviceForCurrentSelection(
+                            mode: previousMode,
+                            inConfiguration: true,
+                            preferredLens: previousLens
+                        )
+                    } else {
+                        DispatchQueue.main.async {
+                            self.colorProfile = .unavailable
+                            self.canRecord = false
+                            self.canCapturePhoto = false
+                            self.appleProRAWEnabled = false
+                        }
+                    }
                     return
                 }
             }
+
             self.configureDeviceForCurrentSelection(
                 mode: nextMode,
                 inConfiguration: true,
                 preferredLens: preferredLens
             )
-            self.session.commitConfiguration()
-            self.configureOutput()
+            resolvedMode = nextMode
         }
     }
 
@@ -1438,7 +1481,9 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func photoManualExposureValues(for device: AVCaptureDevice) -> (duration: CMTime, iso: Float)? {
-        guard captureMode == .photo, photoProExposureEnabled else { return nil }
+        guard captureMode == .photo,
+              photoProExposureEnabled,
+              photoProExposureMode == .manual else { return nil }
 
         let duration = clampedShutterDuration(
             for: photoManualShutterSpeedDenominator,
@@ -1480,13 +1525,33 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func preparePhotoWhiteBalanceForCapture(on device: AVCaptureDevice) {
+    private func preparePhotoWhiteBalanceForCapture(on device: AVCaptureDevice,
+                                                    completion: @escaping () -> Void) {
+        guard usesManualWhiteBalance(for: .photo),
+              device.isWhiteBalanceModeSupported(.locked),
+              device.isLockingWhiteBalanceWithCustomDeviceGainsSupported else {
+            do {
+                try device.lockForConfiguration()
+                applyWhiteBalanceState(on: device, mode: .photo)
+                device.unlockForConfiguration()
+            } catch {
+                presentStatusMessage("Photo white balance update failed.")
+            }
+            completion()
+            return
+        }
+
         do {
             try device.lockForConfiguration()
-            applyWhiteBalanceState(on: device, mode: .photo)
+            applyManualWhiteBalance(on: device, mode: .photo) { [weak self] _ in
+                self?.sessionQueue.async {
+                    completion()
+                }
+            }
             device.unlockForConfiguration()
         } catch {
             presentStatusMessage("Photo white balance update failed.")
+            completion()
         }
     }
 
@@ -1792,7 +1857,7 @@ final class CameraManager: NSObject, ObservableObject {
 
         sessionQueue.async {
             guard !self.isRecording else { return }
-            self.videoDataOutput.alwaysDiscardsLateVideoFrames = false
+            self.videoDataOutput.alwaysDiscardsLateVideoFrames = true
             self.stopProExposureAutomation()
             self.prepareDeviceForRecording()
 
@@ -1846,46 +1911,49 @@ final class CameraManager: NSObject, ObservableObject {
 
         sessionQueue.async {
             guard !self.isPhotoCaptureInProgress else { return }
-            guard let settings = self.makePhotoSettings() else {
-                self.presentStatusMessage("Could not configure ProRAW capture.")
-                return
-            }
             guard let device = self.videoInput?.device ?? self.activeDevice else {
                 self.presentStatusMessage("Camera unavailable.")
                 return
             }
+            guard let settings = self.makePhotoSettings(for: device) else {
+                self.presentStatusMessage("Could not configure ProRAW capture.")
+                return
+            }
 
-            self.preparePhotoWhiteBalanceForCapture(on: device)
-            self.preparePhotoExposureForCapture(on: device) {
-                settings.photoQualityPrioritization = .quality
-                if let connection = self.photoOutput.connection(with: .video),
-                   connection.isVideoMirroringSupported {
-                    connection.isVideoMirrored = (self.videoInput?.device ?? self.activeDevice)?.position == .front
-                }
+            let manualExposureActive = self.photoManualExposureValues(for: device) != nil
+            self.applyPhotoQualityPrioritization(to: settings, manualExposureActive: manualExposureActive)
 
-                let captureID = settings.uniqueID
-                let processor = PhotoCaptureProcessor(processedFileType: settings.processedFileType) { [weak self] captureResult in
-                    guard let self else { return }
-                    self.sessionQueue.async {
-                        self.activePhotoProcessors[captureID] = nil
+            self.preparePhotoWhiteBalanceForCapture(on: device) {
+                self.preparePhotoExposureForCapture(on: device) {
+                    if let connection = self.photoOutput.connection(with: .video),
+                       connection.isVideoMirroringSupported {
+                        connection.isVideoMirrored = (self.videoInput?.device ?? self.activeDevice)?.position == .front
                     }
+
+                    let captureID = settings.uniqueID
+                    let processor = PhotoCaptureProcessor(processedFileType: settings.processedFileType) { [weak self] captureResult in
+                        guard let self else { return }
+                        self.sessionQueue.async {
+                            self.activePhotoProcessors[captureID] = nil
+                        }
+                        DispatchQueue.main.async {
+                            self.isPhotoCaptureInProgress = false
+                        }
+
+                        guard let captureResult else {
+                            self.presentStatusMessage("RAW capture failed.")
+                            return
+                        }
+
+                        self.saveCapturedPhotoToPhotoLibrary(captureResult)
+                    }
+
+                    self.activePhotoProcessors[captureID] = processor
                     DispatchQueue.main.async {
-                        self.isPhotoCaptureInProgress = false
+                        self.isPhotoCaptureInProgress = true
                     }
-
-                    guard let captureResult else {
-                        self.presentStatusMessage("RAW capture failed.")
-                        return
-                    }
-
-                    self.saveCapturedPhotoToPhotoLibrary(captureResult)
+                    self.photoOutput.capturePhoto(with: settings, delegate: processor)
                 }
-
-                self.activePhotoProcessors[captureID] = processor
-                DispatchQueue.main.async {
-                    self.isPhotoCaptureInProgress = true
-                }
-                self.photoOutput.capturePhoto(with: settings, delegate: processor)
             }
         }
     }
@@ -1896,7 +1964,7 @@ final class CameraManager: NSObject, ObservableObject {
         return photoOutput.availableRawPhotoPixelFormatTypes.first(where: AVCapturePhotoOutput.isAppleProRAWPixelFormat)
     }
 
-    private func makePhotoSettings() -> AVCapturePhotoSettings? {
+    private func makePhotoSettings(for device: AVCaptureDevice) -> AVCapturePhotoSettings? {
         guard let rawPixelType = preferredAppleProRAWPixelFormatForCapture() else { return nil }
         let processedConfiguration: ProcessedPhotoCaptureConfiguration?
 
@@ -1931,8 +1999,7 @@ final class CameraManager: NSObject, ObservableObject {
             )
         }
 
-        if let device = videoInput?.device ?? activeDevice,
-           let preferredDimensions = preferredPhotoDimensions(for: device) {
+        if let preferredDimensions = preferredPhotoDimensions(for: device) {
             if photoOutput.maxPhotoDimensions.width != preferredDimensions.width ||
                 photoOutput.maxPhotoDimensions.height != preferredDimensions.height {
                 photoOutput.maxPhotoDimensions = preferredDimensions
@@ -1941,6 +2008,16 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         return settings
+    }
+
+    private func applyPhotoQualityPrioritization(to settings: AVCapturePhotoSettings,
+                                                 manualExposureActive: Bool) {
+        if manualExposureActive {
+            // Balanced/quality photo processing may override custom ISO and shutter values.
+            settings.photoQualityPrioritization = .speed
+        } else {
+            settings.photoQualityPrioritization = .quality
+        }
     }
 
     private func processedPhotoCaptureConfiguration(for format: PhotoCompanionFormat) -> ProcessedPhotoCaptureConfiguration? {
@@ -2458,7 +2535,8 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func installVideoInput(device: AVCaptureDevice) -> Bool {
+    private func installVideoInput(device: AVCaptureDevice, mode: CaptureMode? = nil) -> Bool {
+        let targetMode = mode ?? captureMode
         do {
             let input = try AVCaptureDeviceInput(device: device)
             if #available(iOS 12.0, *) {
@@ -2471,14 +2549,37 @@ final class CameraManager: NSObject, ObservableObject {
                 self.activeDevice = device
                 self.supportsManualFocus = device.isLockingFocusWithCustomLensPositionSupported
                 if !device.isLockingFocusWithCustomLensPositionSupported {
-                    self.setStoredManualFocusEnabled(false, for: self.captureMode)
+                    self.setStoredManualFocusEnabled(false, for: targetMode)
                 }
-                self.syncPublishedManualFocusState(for: self.captureMode)
+                self.syncPublishedManualFocusState(for: targetMode)
             }
             setupCaptureRotationCoordinator(for: device)
             return true
         } catch {
             return false
+        }
+    }
+
+    private func cancelPendingCaptureModeWork() {
+        pendingFocusLockWorkItem?.cancel()
+        pendingFocusLockWorkItem = nil
+        pendingPhotoManualExposureRefreshWorkItem?.cancel()
+        pendingPhotoManualExposureRefreshWorkItem = nil
+        pendingManualWhiteBalanceRefreshWorkItem?.cancel()
+        pendingManualWhiteBalanceRefreshWorkItem = nil
+    }
+
+    private func finishCaptureModeSwitch(to mode: CaptureMode) {
+        DispatchQueue.main.async {
+            if self.captureMode != mode {
+                self.captureMode = mode
+                self.syncPublishedExposureBiasState(for: mode)
+                self.syncPublishedManualFocusState(for: mode)
+            }
+            if mode != .photo {
+                self.photoMeteringHandlesVisible = false
+            }
+            self.isSwitchingCaptureMode = false
         }
     }
 
@@ -2945,7 +3046,7 @@ final class CameraManager: NSObject, ObservableObject {
     private func configureOutput(mode: CaptureMode? = nil) {
         let targetMode = mode ?? captureMode
         if let connection = videoDataOutput.connection(with: .video) {
-            applyPreviewConnectionConfiguration(connection)
+            applyRecordingConnectionConfiguration(connection)
             observeActiveStabilizationMode(on: connection)
             refreshActiveStabilizationMode(from: connection)
         }
@@ -2955,6 +3056,23 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func applyPreviewConnectionConfiguration(_ connection: AVCaptureConnection) {
+        applyMirroringConfiguration(to: connection)
+
+        if connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = .off
+        }
+    }
+
+    private func applyRecordingConnectionConfiguration(_ connection: AVCaptureConnection) {
+        applyMirroringConfiguration(to: connection)
+
+        if connection.isVideoStabilizationSupported {
+            let preferredMode = preferredStabilizationAVMode(for: (videoInput?.device ?? activeDevice)?.activeFormat)
+            connection.preferredVideoStabilizationMode = preferredMode
+        }
+    }
+
+    private func applyMirroringConfiguration(to connection: AVCaptureConnection) {
         let captureDevice = videoInput?.device ?? activeDevice
 
         if connection.isVideoMirroringSupported {
@@ -2962,11 +3080,6 @@ final class CameraManager: NSObject, ObservableObject {
                 connection.automaticallyAdjustsVideoMirroring = false
             }
             connection.isVideoMirrored = captureDevice?.position == .front
-        }
-
-        if connection.isVideoStabilizationSupported {
-            let preferredMode = preferredStabilizationAVMode(for: captureDevice?.activeFormat)
-            connection.preferredVideoStabilizationMode = preferredMode
         }
     }
 
@@ -3464,8 +3577,11 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func applyManualWhiteBalance(on device: AVCaptureDevice, mode: CaptureMode? = nil) {
-        guard device.isWhiteBalanceModeSupported(.locked) else { return }
+    private func applyManualWhiteBalance(on device: AVCaptureDevice,
+                                         mode: CaptureMode? = nil,
+                                         completionHandler: ((CMTime) -> Void)? = nil) {
+        guard device.isWhiteBalanceModeSupported(.locked),
+              device.isLockingWhiteBalanceWithCustomDeviceGainsSupported else { return }
         let targetMode = mode ?? captureMode
 
         let values = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(
@@ -3474,7 +3590,7 @@ final class CameraManager: NSObject, ObservableObject {
         )
         var gains = device.deviceWhiteBalanceGains(for: values)
         gains = normalizedWhiteBalanceGains(gains, for: device)
-        device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
+        device.setWhiteBalanceModeLocked(with: gains, completionHandler: completionHandler)
     }
 
     private func normalizedWhiteBalanceGains(_ gains: AVCaptureDevice.WhiteBalanceGains,
@@ -3877,7 +3993,10 @@ final class CameraManager: NSObject, ObservableObject {
                     device.focusPointOfInterest = point
                 }
 
-                if !self.isCurrentProExposureEnabled && device.isExposurePointOfInterestSupported {
+                let canAdjustExposure = !self.isCurrentProExposureEnabled &&
+                    !(self.isRecording && self.exposureLockedDuringRecording)
+
+                if canAdjustExposure && device.isExposurePointOfInterestSupported {
                     device.exposurePointOfInterest = point
                     if device.isExposureRectOfInterestSupported {
                         device.exposureRectOfInterest = self.fullFrameAutoExposureRectOfInterest
@@ -3888,14 +4007,14 @@ final class CameraManager: NSObject, ObservableObject {
                     if device.isFocusModeSupported(.autoFocus) {
                         device.focusMode = .autoFocus
                     }
-                    if !self.isCurrentProExposureEnabled && device.isExposureModeSupported(.autoExpose) {
+                    if canAdjustExposure && device.isExposureModeSupported(.autoExpose) {
                         device.exposureMode = .autoExpose
                     }
                 } else {
                     if device.isFocusModeSupported(.continuousAutoFocus) {
                         device.focusMode = .continuousAutoFocus
                     }
-                    if !self.isCurrentProExposureEnabled && device.isExposureModeSupported(.continuousAutoExposure) {
+                    if canAdjustExposure && device.isExposureModeSupported(.continuousAutoExposure) {
                         device.exposureMode = .continuousAutoExposure
                     }
                 }
@@ -4074,18 +4193,29 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func publishPreviewFrame(from sampleBuffer: CMSampleBuffer) {
+    private func dispatchPreviewFrameIfNeeded(from sampleBuffer: CMSampleBuffer) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let minimumInterval = isRecording ? (1.0 / 30.0) : (1.0 / 60.0)
+        guard now - lastPreviewFrameDispatchTime >= minimumInterval else { return }
+        lastPreviewFrameDispatchTime = now
+
+        guard let frame = makePreviewFrame(from: sampleBuffer) else { return }
+        previewQueue.async { [weak self] in
+            self?.previewFrameSubject.send(frame)
+        }
+    }
+
+    private func makePreviewFrame(from sampleBuffer: CMSampleBuffer) -> PreviewFrame? {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            return
+            return nil
         }
 
-        previewFrameSubject.send(
-            PreviewFrame(
-                pixelBuffer: pixelBuffer,
-                profile: colorProfile,
-                yCbCrMatrix: previewYCbCrMatrix(for: pixelBuffer),
-                isFullRange: isFullRangePixelBuffer(pixelBuffer)
-            )
+        return PreviewFrame(
+            pixelBuffer: pixelBuffer,
+            profile: colorProfile,
+            captureMode: captureMode,
+            yCbCrMatrix: previewYCbCrMatrix(for: pixelBuffer),
+            isFullRange: isFullRangePixelBuffer(pixelBuffer)
         )
     }
 
@@ -4163,9 +4293,9 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
                                    didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
         if output === self.videoDataOutput {
-            self.publishPreviewFrame(from: sampleBuffer)
-            self.syncAutoControlReadbackIfNeeded()
             self.appendVideoSampleBuffer(sampleBuffer)
+            self.dispatchPreviewFrameIfNeeded(from: sampleBuffer)
+            self.syncAutoControlReadbackIfNeeded()
         } else if output === self.audioDataOutput {
             self.appendAudioSampleBuffer(sampleBuffer)
         }

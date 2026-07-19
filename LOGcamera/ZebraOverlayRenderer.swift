@@ -9,6 +9,7 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
     private let lutProcessor = PreviewLUTProcessor()
     private let stateQueue = DispatchQueue(label: "com.logcamera.zebraOverlayState")
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+    private static let photoRawPreviewExposureEV = -0.58
 
     private var latestFrame: PreviewFrame?
     private var isEnabled = false
@@ -188,13 +189,13 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
     }
 
     private func monitoringImage(for frame: PreviewFrame, lookMode: PreviewLookMode) -> CIImage? {
+        if frame.captureMode == .photo {
+            return photoRawMatchedImage(for: frame.pixelBuffer)
+        }
+
         switch lookMode {
         case .log:
-            var options: [CIImageOption: Any] = [.applyCleanAperture: true]
-            if let sourceColorSpace = sourceColorSpace(for: frame.pixelBuffer) {
-                options[.colorSpace] = sourceColorSpace
-            }
-            return CIImage(cvPixelBuffer: frame.pixelBuffer, options: options)
+            return colorManagedImage(for: frame.pixelBuffer)
 
         case .rec709:
             let rawImage = CIImage(
@@ -207,7 +208,7 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
 
             guard let cube = lutProcessor.cube(for: frame.profile),
                   let filter = CIFilter(name: "CIColorCube") else {
-                return rawImage
+                return colorManagedImage(for: frame.pixelBuffer)
             }
 
             filter.setValue(rawImage, forKey: kCIInputImageKey)
@@ -215,6 +216,22 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
             filter.setValue(cube.data, forKey: "inputCubeData")
             return filter.outputImage?.cropped(to: rawImage.extent) ?? rawImage
         }
+    }
+
+    private func photoRawMatchedImage(for pixelBuffer: CVPixelBuffer) -> CIImage {
+        colorManagedImage(for: pixelBuffer)
+            .applyingFilter(
+                "CIExposureAdjust",
+                parameters: [kCIInputEVKey: Self.photoRawPreviewExposureEV]
+            )
+    }
+
+    private func colorManagedImage(for pixelBuffer: CVPixelBuffer) -> CIImage {
+        var options: [CIImageOption: Any] = [.applyCleanAperture: true]
+        if let sourceColorSpace = sourceColorSpace(for: pixelBuffer) {
+            options[.colorSpace] = sourceColorSpace
+        }
+        return CIImage(cvPixelBuffer: pixelBuffer, options: options)
     }
 
     private func sourceColorSpace(for pixelBuffer: CVPixelBuffer) -> CGColorSpace? {
@@ -255,6 +272,7 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
     private let lutProcessor = PreviewLUTProcessor()
     private let stateQueue = DispatchQueue(label: "com.logcamera.focusPeakingOverlayState")
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+    private static let photoRawPreviewExposureEV = -0.58
 
     private var latestFrame: PreviewFrame?
     private var isEnabled = false
@@ -436,13 +454,13 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
     }
 
     private func monitoringImage(for frame: PreviewFrame, lookMode: PreviewLookMode) -> CIImage? {
+        if frame.captureMode == .photo {
+            return photoRawMatchedImage(for: frame.pixelBuffer)
+        }
+
         switch lookMode {
         case .log:
-            var options: [CIImageOption: Any] = [.applyCleanAperture: true]
-            if let sourceColorSpace = sourceColorSpace(for: frame.pixelBuffer) {
-                options[.colorSpace] = sourceColorSpace
-            }
-            return CIImage(cvPixelBuffer: frame.pixelBuffer, options: options)
+            return colorManagedImage(for: frame.pixelBuffer)
 
         case .rec709:
             let rawImage = CIImage(
@@ -455,7 +473,7 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
 
             guard let cube = lutProcessor.cube(for: frame.profile),
                   let filter = CIFilter(name: "CIColorCube") else {
-                return rawImage
+                return colorManagedImage(for: frame.pixelBuffer)
             }
 
             filter.setValue(rawImage, forKey: kCIInputImageKey)
@@ -463,6 +481,22 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
             filter.setValue(cube.data, forKey: "inputCubeData")
             return filter.outputImage?.cropped(to: rawImage.extent) ?? rawImage
         }
+    }
+
+    private func photoRawMatchedImage(for pixelBuffer: CVPixelBuffer) -> CIImage {
+        colorManagedImage(for: pixelBuffer)
+            .applyingFilter(
+                "CIExposureAdjust",
+                parameters: [kCIInputEVKey: Self.photoRawPreviewExposureEV]
+            )
+    }
+
+    private func colorManagedImage(for pixelBuffer: CVPixelBuffer) -> CIImage {
+        var options: [CIImageOption: Any] = [.applyCleanAperture: true]
+        if let sourceColorSpace = sourceColorSpace(for: pixelBuffer) {
+            options[.colorSpace] = sourceColorSpace
+        }
+        return CIImage(cvPixelBuffer: pixelBuffer, options: options)
     }
 
     private func sourceColorSpace(for pixelBuffer: CVPixelBuffer) -> CGColorSpace? {

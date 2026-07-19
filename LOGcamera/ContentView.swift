@@ -1875,53 +1875,50 @@ private struct CameraScreen: View {
 private struct CameraSettingsView: View {
     @ObservedObject var cameraManager: CameraManager
     @Environment(\.dismiss) private var dismiss
+    @State private var isPhotoExpanded = true
+    @State private var isVideoExpanded = true
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                Color.black.ignoresSafeArea()
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.07, green: 0.07, blue: 0.08),
-                        Color.black,
-                        Color(red: 0.05, green: 0.05, blue: 0.06)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
+        ZStack(alignment: .top) {
+            settingsBackground
 
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        header
-                        appSection
-                        photoSection
-                        videoSection
-                    }
-                    .frame(width: max(proxy.size.width - 32, 0), alignment: .leading)
-                    .padding(.top, 12)
-                    .padding(.bottom, 32)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 14) {
+                    appSection
+                    photoSection
+                    videoSection
                 }
+                .padding(.horizontal, 14)
+                .padding(.top, 92)
+                .padding(.bottom, 34)
             }
             .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+
+            stickyHeader
         }
         .preferredColorScheme(.dark)
     }
 
-    private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Settings")
-                    .font(.system(size: 24, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(AppTheme.textPrimary)
+    private var settingsBackground: some View {
+        LinearGradient(
+            colors: [
+                Color(red: 0.05, green: 0.05, blue: 0.055),
+                Color.black,
+                Color(red: 0.08, green: 0.08, blue: 0.09)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .ignoresSafeArea()
+    }
 
-                Text("Separate defaults for launch, photo capture, and video monitoring.")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+    private var stickyHeader: some View {
+        HStack(spacing: 12) {
+            Text("Settings")
+                .font(.system(size: 22, weight: .heavy, design: .monospaced))
+                .foregroundStyle(AppTheme.textPrimary)
 
-            Spacer()
+            Spacer(minLength: 0)
 
             Button {
                 dismiss()
@@ -1929,198 +1926,121 @@ private struct CameraSettingsView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(AppTheme.textPrimary)
-                    .frame(width: 42, height: 42)
+                    .frame(width: 44, height: 44)
                     .metalCirclePanel()
             }
             .buttonStyle(.plain)
         }
-        .padding(.top, 10)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 12)
+        .background(.black.opacity(0.84))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 1)
+        }
     }
 
     private var appSection: some View {
-        settingsCard(title: "App") {
-            VStack(alignment: .leading, spacing: 12) {
-                settingsSubsection(title: "Default Mode") {
-                    settingsButtonGrid {
-                        ForEach(CaptureMode.allCases) { mode in
-                            selectionButton(
-                                title: mode.title,
-                                isSelected: cameraManager.defaultCaptureMode == mode
-                            ) {
-                                cameraManager.selectDefaultCaptureMode(mode)
-                            }
+        settingsPanel(title: "App", icon: "camera.aperture") {
+            settingsRow(title: "Startup Mode") {
+                optionStrip {
+                    ForEach(CaptureMode.allCases) { mode in
+                        selectionButton(
+                            title: mode.title,
+                            isSelected: cameraManager.defaultCaptureMode == mode
+                        ) {
+                            cameraManager.selectDefaultCaptureMode(mode)
                         }
                     }
-
-                    settingsSupportingText("This mode opens when the app launches.")
                 }
-            }
-        }
-    }
-
-    private var previewOptions: some View {
-        settingsButtonGrid {
-            ForEach(PreviewLookMode.allCases) { mode in
-                selectionButton(
-                    title: mode.title,
-                    isSelected: cameraManager.previewLookMode == mode
-                ) {
-                    cameraManager.selectPreviewLookMode(mode)
-                }
-            }
-        }
-    }
-
-    private var frameRateOptions: some View {
-        settingsButtonGrid {
-            ForEach(CameraManager.supportedFrameRates, id: \.self) { fps in
-                frameRateButton(
-                    fps: fps,
-                    isSelected: cameraManager.selectedFrameRate == fps
-                ) {
-                    cameraManager.selectFrameRate(fps)
-                }
-                .disabled(cameraManager.isRecording)
             }
         }
     }
 
     private var photoSection: some View {
-        settingsCard(title: "Photo") {
-            VStack(alignment: .leading, spacing: 12) {
-                settingsSubsection(title: "Default Lens") {
-                    photoDefaultLensOptions
-                }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Format") {
-                    photoCaptureOptions
-                }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Resolution") {
-                    photoResolutionOptions
-                }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Metering") {
-                    photoMeteringOptions
-                }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Monitoring") {
-                    monitoringOptions(for: .photo)
-                }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Composition") {
-                    photoCompositionOptions
-                }
-            }
+        collapsiblePanel(
+            title: "Photo",
+            subtitle: cameraManager.appleProRAWEnabled ? "ProRAW ready" : "ProRAW unavailable",
+            icon: "camera.fill",
+            isExpanded: $isPhotoExpanded
+        ) {
+            photoSettingsRows
         }
     }
 
-    private var photoDefaultLensOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            settingsButtonGrid(minimumWidth: 88) {
-                ForEach(PhotoDefaultWideFocalLength.allCases) { focalLength in
-                    selectionButton(
-                        title: focalLength.title,
-                        isSelected: cameraManager.photoDefaultWideFocalLength == focalLength
-                    ) {
-                        cameraManager.selectPhotoDefaultWideFocalLength(focalLength)
+    private var photoSettingsRows: some View {
+        VStack(spacing: 0) {
+            settingsRow(title: "Default Lens") {
+                optionStrip {
+                    ForEach(PhotoDefaultWideFocalLength.allCases) { focalLength in
+                        selectionButton(
+                            title: focalLength.title,
+                            isSelected: cameraManager.photoDefaultWideFocalLength == focalLength
+                        ) {
+                            cameraManager.selectPhotoDefaultWideFocalLength(focalLength)
+                        }
                     }
                 }
             }
 
-            settingsSupportingText("Chooses the startup focal length for the main wide lens. If the selected crop is unavailable on the current device, LOGcamera falls back to 24 mm.")
-        }
-    }
-
-    private var photoCaptureOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Format")
-                    .foregroundStyle(.white.opacity(0.7))
-                Spacer()
-                Text(cameraManager.appleProRAWEnabled ? "ProRAW DNG" : "Unavailable")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(cameraManager.appleProRAWEnabled ? AppTheme.accent : .white.opacity(0.7))
-            }
-            .font(.system(size: 12, weight: .medium))
-
-            settingsButtonGrid {
-                ForEach(PhotoCompanionFormat.allCases) { format in
-                    selectionButton(
-                        title: format.title,
-                        isSelected: cameraManager.photoCompanionFormat == format
-                    ) {
-                        cameraManager.selectPhotoCompanionFormat(format)
+            settingsRow(title: "Companion", detail: cameraManager.appleProRAWEnabled ? "DNG base" : "RAW off") {
+                optionStrip {
+                    ForEach(PhotoCompanionFormat.allCases) { format in
+                        selectionButton(
+                            title: format.title,
+                            isSelected: cameraManager.photoCompanionFormat == format
+                        ) {
+                            cameraManager.selectPhotoCompanionFormat(format)
+                        }
                     }
                 }
             }
 
-            settingsSupportingText("HEIC/JPEG is saved as a separate file next to the DNG.")
-        }
-    }
-
-    private var photoResolutionOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            settingsButtonGrid {
-                ForEach(PhotoResolutionOption.allCases) { option in
-                    selectionButton(
-                        title: option.title,
-                        isSelected: cameraManager.photoResolutionOption == option
-                    ) {
-                        cameraManager.selectPhotoResolutionOption(option)
+            settingsRow(title: "Resolution") {
+                optionStrip {
+                    ForEach(PhotoResolutionOption.allCases) { option in
+                        selectionButton(
+                            title: option.title,
+                            isSelected: cameraManager.photoResolutionOption == option
+                        ) {
+                            cameraManager.selectPhotoResolutionOption(option)
+                        }
                     }
                 }
             }
 
-            settingsSupportingText("12 MP uses the closest supported 12-megapixel capture size.")
-        }
-    }
+            photoMeteringRow
+            zebraRows(for: .photo)
+            focusPeakingRows(for: .photo)
 
-    private var photoCompositionOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            settingsButtonGrid {
-                selectionButton(
-                    title: "Grid Off",
-                    isSelected: !cameraManager.photoGridEnabled
-                ) {
-                    cameraManager.photoGridEnabled = false
-                }
-
-                selectionButton(
-                    title: "Grid On",
-                    isSelected: cameraManager.photoGridEnabled
-                ) {
-                    cameraManager.photoGridEnabled = true
+            settingsRow(title: "Grid") {
+                optionStrip {
+                    selectionButton(title: "Off", isSelected: !cameraManager.photoGridEnabled) {
+                        cameraManager.photoGridEnabled = false
+                    }
+                    selectionButton(title: "On", isSelected: cameraManager.photoGridEnabled) {
+                        cameraManager.photoGridEnabled = true
+                    }
                 }
             }
-
-            settingsSupportingText("Shows a 3×3 rule-of-thirds grid on the photo preview.")
         }
     }
 
-    private var photoMeteringOptions: some View {
-        let forcesLinkedInPhotoPro = cameraManager.photoProExposureEnabled
+    private var photoMeteringRow: some View {
+        let forcesLinked = cameraManager.photoProExposureEnabled
 
-        return VStack(alignment: .leading, spacing: 10) {
-            settingsButtonGrid {
+        return settingsRow(title: "Metering", detail: forcesLinked ? "Manual links AF/EV" : nil) {
+            optionStrip {
                 selectionButton(
                     title: "Separate",
                     isSelected: !cameraManager.effectivePhotoMeteringPointsLinked
                 ) {
                     cameraManager.photoMeteringPointsLinked = false
                 }
-                .disabled(forcesLinkedInPhotoPro)
-                .opacity(forcesLinkedInPhotoPro ? 0.45 : 1)
+                .disabled(forcesLinked)
+                .opacity(forcesLinked ? 0.45 : 1)
 
                 selectionButton(
                     title: "Linked",
@@ -2129,288 +2049,168 @@ private struct CameraSettingsView: View {
                     cameraManager.photoMeteringPointsLinked = true
                 }
             }
-
-            settingsSupportingText(
-                forcesLinkedInPhotoPro
-                ? "In Manual mode, AF and EV are always Linked so tap/drag metering does not override manual ISO or shutter speed. Outside Manual mode, your saved Separate or Linked choice is used again."
-                : "Separate keeps AF and EV draggable on their own. Linked keeps both markers together while dragging either one."
-            )
         }
     }
 
     private var videoSection: some View {
-        settingsCard(title: "Video") {
-            VStack(alignment: .leading, spacing: 12) {
-                settingsSubsection(title: "Preview") {
-                    previewOptions
+        collapsiblePanel(
+            title: "Video",
+            subtitle: "\(cameraManager.selectedFrameRate) fps - \(cameraManager.selectedVideoCodec.title)",
+            icon: "video.fill",
+            isExpanded: $isVideoExpanded
+        ) {
+            videoSettingsRows
+        }
+    }
+
+    private var videoSettingsRows: some View {
+        VStack(spacing: 0) {
+            settingsRow(title: "Preview") {
+                optionStrip {
+                    ForEach(PreviewLookMode.allCases) { mode in
+                        selectionButton(
+                            title: mode.title,
+                            isSelected: cameraManager.previewLookMode == mode
+                        ) {
+                            cameraManager.selectPreviewLookMode(mode)
+                        }
+                    }
                 }
+            }
 
-                settingsDivider()
+            zebraRows(for: .video)
+            focusPeakingRows(for: .video)
 
-                settingsSubsection(title: "Monitoring") {
-                    monitoringOptions(for: .video)
+            settingsRow(title: "Frame Rate") {
+                optionStrip {
+                    ForEach(CameraManager.supportedFrameRates, id: \.self) { fps in
+                        selectionButton(
+                            title: "\(fps)",
+                            isSelected: cameraManager.selectedFrameRate == fps
+                        ) {
+                            cameraManager.selectFrameRate(fps)
+                        }
+                        .disabled(cameraManager.isRecording)
+                        .opacity(cameraManager.isRecording ? 0.45 : 1)
+                    }
                 }
+            }
 
-                settingsDivider()
-
-                settingsSubsection(title: "Frame Rate") {
-                    frameRateOptions
+            settingsRow(title: "Codec") {
+                optionStrip {
+                    ForEach(VideoRecordingCodec.allCases) { codec in
+                        selectionButton(
+                            title: codec.title,
+                            isSelected: cameraManager.selectedVideoCodec == codec
+                        ) {
+                            cameraManager.selectVideoCodec(codec)
+                        }
+                    }
                 }
+            }
 
-                settingsDivider()
+            bitrateRow
+            audioRows
+            stabilizationRow
+            lockRow
 
-                settingsSubsection(title: "Codec") {
-                    videoCodecOptions
-                }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Bitrate") {
-                    bitrateOptions
-                }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Audio") {
-                    videoAudioOptions
-                }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Stabilization") {
-                    stabilizationOptions
-                }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Locks") {
-                    lockOptions
-                }
-
-                settingsDivider()
-
-                settingsSubsection(title: "Composition") {
-                    videoCompositionOptions
+            settingsRow(title: "Grid") {
+                optionStrip {
+                    selectionButton(title: "Off", isSelected: !cameraManager.videoGridEnabled) {
+                        cameraManager.videoGridEnabled = false
+                    }
+                    selectionButton(title: "On", isSelected: cameraManager.videoGridEnabled) {
+                        cameraManager.videoGridEnabled = true
+                    }
                 }
             }
         }
     }
 
-    private func monitoringOptions(for mode: CaptureMode) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            subsectionLabel("Zebras")
-            zebraOptions(for: mode)
-
-            Rectangle()
-                .fill(Color.white.opacity(0.06))
-                .frame(height: 1)
-
-            subsectionLabel("Focus Peaking")
-            focusPeakingOptions(for: mode)
-        }
-    }
-
-    private func zebraOptions(for mode: CaptureMode) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            settingsButtonGrid {
-                selectionButton(
-                    title: "Zebra Off",
-                    isSelected: !cameraManager.isZebraEnabled(for: mode)
-                ) {
-                    cameraManager.setZebraEnabled(false, for: mode)
-                }
-
-                selectionButton(
-                    title: "Zebra On",
-                    isSelected: cameraManager.isZebraEnabled(for: mode)
-                ) {
-                    cameraManager.setZebraEnabled(true, for: mode)
+    private func zebraRows(for mode: CaptureMode) -> some View {
+        Group {
+            settingsRow(title: "Zebras") {
+                optionStrip {
+                    selectionButton(
+                        title: "Off",
+                        isSelected: !cameraManager.isZebraEnabled(for: mode)
+                    ) {
+                        cameraManager.setZebraEnabled(false, for: mode)
+                    }
+                    selectionButton(
+                        title: "On",
+                        isSelected: cameraManager.isZebraEnabled(for: mode)
+                    ) {
+                        cameraManager.setZebraEnabled(true, for: mode)
+                    }
                 }
             }
 
-            HStack {
-                Text("Threshold")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(AppTheme.textPrimary)
-                Spacer()
-                Text("\(cameraManager.zebraThresholdPercent(for: mode))%")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(AppTheme.accent)
-            }
-
-            Slider(
+            sliderRow(
+                title: "Zebra Level",
+                valueText: "\(cameraManager.zebraThresholdPercent(for: mode))%",
                 value: Binding(
                     get: { Double(cameraManager.zebraThresholdPercent(for: mode)) },
                     set: { cameraManager.setZebraThresholdPercent(Int($0.rounded()), for: mode) }
                 ),
-                in: 80...100,
-                step: 1
+                range: 80...100,
+                tint: AppTheme.accent
             )
-            .tint(AppTheme.accent)
 
-            settingsButtonGrid {
-                ForEach(ZebraChannel.allCases) { channel in
+            settingsRow(title: "Zebra Color") {
+                optionStrip {
+                    ForEach(ZebraChannel.allCases) { channel in
+                        selectionButton(
+                            title: channel.title,
+                            isSelected: cameraManager.zebraChannelSetting(for: mode) == channel
+                        ) {
+                            cameraManager.selectZebraChannel(channel, for: mode)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func focusPeakingRows(for mode: CaptureMode) -> some View {
+        Group {
+            settingsRow(title: "Peaking") {
+                optionStrip {
                     selectionButton(
-                        title: channel.title,
-                        isSelected: cameraManager.zebraChannelSetting(for: mode) == channel
+                        title: "Off",
+                        isSelected: !cameraManager.isFocusPeakingEnabled(for: mode)
                     ) {
-                        cameraManager.selectZebraChannel(channel, for: mode)
+                        cameraManager.setFocusPeakingEnabled(false, for: mode)
+                    }
+                    selectionButton(
+                        title: "On",
+                        isSelected: cameraManager.isFocusPeakingEnabled(for: mode)
+                    ) {
+                        cameraManager.setFocusPeakingEnabled(true, for: mode)
                     }
                 }
             }
 
-            settingsSupportingText(
-                mode == .photo
-                ? "Photo zebras are independent from video and warn on the still-photo preview only."
-                : "Video zebras are independent from photo and stay tuned for the live monitoring preview."
-            )
-        }
-    }
-
-    private func focusPeakingOptions(for mode: CaptureMode) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            settingsButtonGrid {
-                selectionButton(
-                    title: "Peaking Off",
-                    isSelected: !cameraManager.isFocusPeakingEnabled(for: mode)
-                ) {
-                    cameraManager.setFocusPeakingEnabled(false, for: mode)
-                }
-
-                selectionButton(
-                    title: "Peaking On",
-                    isSelected: cameraManager.isFocusPeakingEnabled(for: mode)
-                ) {
-                    cameraManager.setFocusPeakingEnabled(true, for: mode)
-                }
-            }
-
-            HStack {
-                Text("Sensitivity")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(AppTheme.textPrimary)
-                Spacer()
-                Text("\(cameraManager.focusPeakingSensitivityPercent(for: mode))")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(AppTheme.accent)
-            }
-
-            Slider(
+            sliderRow(
+                title: "Peaking Level",
+                valueText: "\(cameraManager.focusPeakingSensitivityPercent(for: mode))",
                 value: Binding(
                     get: { Double(cameraManager.focusPeakingSensitivityPercent(for: mode)) },
                     set: { cameraManager.setFocusPeakingSensitivityPercent(Int($0.rounded()), for: mode) }
                 ),
-                in: 20...100,
-                step: 1
-            )
-            .tint(Color(red: 0.26, green: 0.92, blue: 0.42))
-
-            settingsSupportingText(
-                mode == .photo
-                ? "Photo peaking highlights sharp edges on the still-photo preview. Useful while pulling manual focus before capture."
-                : "Video peaking highlights sharp edges on the live preview so focus pulls are easier to judge while monitoring."
+                range: 20...100,
+                tint: Color(red: 0.26, green: 0.92, blue: 0.42)
             )
         }
     }
 
-    private var videoCompositionOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            settingsButtonGrid {
-                selectionButton(
-                    title: "Grid Off",
-                    isSelected: !cameraManager.videoGridEnabled
-                ) {
-                    cameraManager.videoGridEnabled = false
-                }
-
-                selectionButton(
-                    title: "Grid On",
-                    isSelected: cameraManager.videoGridEnabled
-                ) {
-                    cameraManager.videoGridEnabled = true
-                }
-            }
-
-            settingsSupportingText("Shows a 3×3 rule-of-thirds grid on the video preview.")
-        }
-    }
-
-    private var videoCodecOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            settingsButtonGrid {
-                ForEach(VideoRecordingCodec.allCases) { codec in
-                    selectionButton(
-                        title: codec.title,
-                        isSelected: cameraManager.selectedVideoCodec == codec
-                    ) {
-                        cameraManager.selectVideoCodec(codec)
-                    }
-                }
-            }
-
-            settingsSupportingText(
-                cameraManager.allowsCustomBitrate
-                ? "HEVC uses the bitrate setting below."
-                : "ProRes records larger files and uses its own internal data rate."
-            )
-        }
-    }
-
-    private var stabilizationOptions: some View {
-        VStack(spacing: 10) {
-            HStack {
-                settingsSupportingText("For video mode only.")
-                Spacer()
-            }
-
-            settingsButtonGrid {
-                ForEach(CaptureStabilizationMode.allCases) { mode in
-                    selectionButton(
-                        title: mode.title,
-                        isSelected: cameraManager.selectedStabilizationMode == mode
-                    ) {
-                        cameraManager.selectStabilizationMode(mode)
-                    }
-                    .disabled(cameraManager.captureMode == .video && !cameraManager.supportedStabilizationModes.contains(mode))
-                    .opacity((cameraManager.captureMode == .photo || cameraManager.supportedStabilizationModes.contains(mode)) ? 1 : 0.45)
-                }
-            }
-
-            HStack {
-                Text("Active")
-                    .foregroundStyle(.white.opacity(0.7))
-                Spacer()
-                Text(cameraManager.activeStabilizationTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(cameraManager.activeStabilizationMode == .off ? .white.opacity(0.7) : AppTheme.accent)
-            }
-            .font(.system(size: 12, weight: .medium))
-        }
-    }
-
-    private var lockOptions: some View {
-        VStack(spacing: 8) {
-            settingsButtonGrid(minimumWidth: 132) {
-                lockChip(
-                    title: "WB Lock REC",
-                    isOn: cameraManager.whiteBalanceLockedDuringRecording
-                ) {
-                    cameraManager.whiteBalanceLockedDuringRecording.toggle()
-                }
-
-                lockChip(
-                    title: "AE Lock REC",
-                    isOn: cameraManager.exposureLockedDuringRecording
-                ) {
-                    cameraManager.exposureLockedDuringRecording.toggle()
-                }
-            }
-        }
-    }
-
-    private var bitrateOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            settingsButtonGrid(minimumWidth: 126) {
+    private var bitrateRow: some View {
+        settingsRow(
+            title: "Bitrate",
+            detail: cameraManager.allowsCustomBitrate ? nil : "Codec managed",
+            isEnabled: cameraManager.allowsCustomBitrate
+        ) {
+            optionStrip {
                 ForEach(CameraManager.supportedBitratesMbps, id: \.self) { bitrate in
                     selectionButton(
                         title: String(format: "%.0f Mb/s", bitrate),
@@ -2419,178 +2219,225 @@ private struct CameraSettingsView: View {
                         cameraManager.setRecordingBitrateMbps(bitrate)
                     }
                 }
-            }
-            .disabled(!cameraManager.allowsCustomBitrate)
-            .opacity(cameraManager.allowsCustomBitrate ? 1 : 0.45)
 
-            HStack {
-                Button(cameraManager.usesCustomBitrate ? "Auto" : "Default") {
+                actionChip(title: cameraManager.usesCustomBitrate ? "Auto" : "Default") {
                     cameraManager.resetRecordingBitrateToDefault()
                 }
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(AppTheme.accent)
-                .buttonStyle(.plain)
-
-                Spacer()
-            }
-            .disabled(!cameraManager.allowsCustomBitrate)
-            .opacity(cameraManager.allowsCustomBitrate ? 1 : 0.45)
-
-            if !cameraManager.allowsCustomBitrate {
-                settingsSupportingText("Selected codec manages bitrate internally.")
             }
         }
+        .disabled(!cameraManager.allowsCustomBitrate)
     }
 
-    private var videoAudioOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            settingsButtonGrid {
-                ForEach(VideoAudioMode.allCases) { mode in
-                    selectionButton(
-                        title: mode.title,
-                        isSelected: cameraManager.videoAudioMode == mode
-                    ) {
-                        cameraManager.selectVideoAudioMode(mode)
+    private var audioRows: some View {
+        Group {
+            settingsRow(title: "Audio", detail: cameraManager.activeVideoAudioModeTitle) {
+                optionStrip {
+                    ForEach(VideoAudioMode.allCases) { mode in
+                        let isAvailable = cameraManager.audioCaptureAvailable &&
+                            (mode == .mono || cameraManager.supportedVideoAudioModes.contains(.stereo))
+                        selectionButton(
+                            title: mode.title,
+                            isSelected: cameraManager.videoAudioMode == mode
+                        ) {
+                            cameraManager.selectVideoAudioMode(mode)
+                        }
+                        .disabled(!isAvailable)
+                        .opacity(isAvailable ? 1 : 0.45)
                     }
-                    .disabled(!cameraManager.audioCaptureAvailable || (mode == .stereo && !cameraManager.supportedVideoAudioModes.contains(.stereo)))
-                    .opacity((cameraManager.audioCaptureAvailable && (mode == .mono || cameraManager.supportedVideoAudioModes.contains(.stereo))) ? 1 : 0.45)
                 }
             }
 
-            HStack {
-                Text("Active Capture")
-                    .foregroundStyle(.white.opacity(0.7))
-                Spacer()
-                Text(cameraManager.activeVideoAudioModeTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(cameraManager.activeVideoAudioModeTitle == "Unavailable" ? .white.opacity(0.7) : AppTheme.accent)
-            }
-            .font(.system(size: 12, weight: .medium))
-
-            settingsButtonGrid {
-                selectionButton(
-                    title: "Wind Off",
-                    isSelected: !cameraManager.videoWindNoiseReductionEnabled
-                ) {
-                    cameraManager.setVideoWindNoiseReductionEnabled(false)
-                }
-
-                selectionButton(
-                    title: "Wind On",
-                    isSelected: cameraManager.videoWindNoiseReductionEnabled
-                ) {
-                    cameraManager.setVideoWindNoiseReductionEnabled(true)
+            settingsRow(title: "Wind Filter", isEnabled: cameraManager.canEnableVideoWindNoiseReduction) {
+                optionStrip {
+                    selectionButton(title: "Off", isSelected: !cameraManager.videoWindNoiseReductionEnabled) {
+                        cameraManager.setVideoWindNoiseReductionEnabled(false)
+                    }
+                    selectionButton(title: "On", isSelected: cameraManager.videoWindNoiseReductionEnabled) {
+                        cameraManager.setVideoWindNoiseReductionEnabled(true)
+                    }
                 }
             }
             .disabled(!cameraManager.canEnableVideoWindNoiseReduction)
-            .opacity(cameraManager.canEnableVideoWindNoiseReduction ? 1 : 0.45)
 
-            settingsActionButton(
-                title: "Mic Modes...",
-                detail: cameraManager.activeMicrophoneModeTitle
-            ) {
-                cameraManager.openSystemMicrophoneModes()
+            settingsRow(title: "Mic Mode", detail: "Preferred \(cameraManager.preferredMicrophoneModeTitle)") {
+                optionStrip {
+                    actionChip(title: cameraManager.activeMicrophoneModeTitle) {
+                        cameraManager.openSystemMicrophoneModes()
+                    }
+                }
             }
-
-            HStack {
-                Text("Preferred")
-                    .foregroundStyle(.white.opacity(0.7))
-                Spacer()
-                Text(cameraManager.preferredMicrophoneModeTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(AppTheme.accent)
-            }
-            .font(.system(size: 12, weight: .medium))
-
-            settingsSupportingText(cameraManager.videoAudioSettingsSummary)
-            settingsSupportingText(cameraManager.videoWindNoiseReductionSummary)
         }
     }
 
-    private func settingsCard<Content: View>(title: String,
-                                             @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Capsule()
-                    .fill(AppTheme.accent.opacity(0.85))
-                    .frame(width: 22, height: 5)
+    private var stabilizationRow: some View {
+        settingsRow(title: "Stabilization", detail: cameraManager.activeStabilizationTitle) {
+            optionStrip {
+                ForEach(CaptureStabilizationMode.allCases) { mode in
+                    let isAvailable = cameraManager.captureMode == .photo ||
+                        cameraManager.supportedStabilizationModes.contains(mode)
+                    selectionButton(
+                        title: mode.title,
+                        isSelected: cameraManager.selectedStabilizationMode == mode
+                    ) {
+                        cameraManager.selectStabilizationMode(mode)
+                    }
+                    .disabled(!isAvailable || cameraManager.isRecording)
+                    .opacity(isAvailable && !cameraManager.isRecording ? 1 : 0.45)
+                }
+            }
+        }
+    }
 
+    private var lockRow: some View {
+        settingsRow(title: "REC Locks") {
+            optionStrip {
+                selectionButton(
+                    title: "WB",
+                    isSelected: cameraManager.whiteBalanceLockedDuringRecording
+                ) {
+                    cameraManager.whiteBalanceLockedDuringRecording.toggle()
+                }
+                selectionButton(
+                    title: "AE",
+                    isSelected: cameraManager.exposureLockedDuringRecording
+                ) {
+                    cameraManager.exposureLockedDuringRecording.toggle()
+                }
+            }
+        }
+    }
+
+    private func settingsPanel<Content: View>(title: String,
+                                              icon: String,
+                                              @ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            sectionHeader(title: title, subtitle: nil, icon: icon, isExpanded: nil)
+            content()
+        }
+        .settingsPanelStyle()
+    }
+
+    private func collapsiblePanel<Content: View>(title: String,
+                                                 subtitle: String,
+                                                 icon: String,
+                                                 isExpanded: Binding<Bool>,
+                                                 @ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                withAnimation(.spring(response: 0.30, dampingFraction: 0.90, blendDuration: 0.04)) {
+                    isExpanded.wrappedValue.toggle()
+                }
+            } label: {
+                sectionHeader(title: title, subtitle: subtitle, icon: icon, isExpanded: isExpanded.wrappedValue)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded.wrappedValue {
+                content()
+                    .clipped()
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.985, anchor: .top)),
+                            removal: .opacity
+                        )
+                    )
+            }
+        }
+        .settingsPanelStyle()
+    }
+
+    private func sectionHeader(title: String,
+                               subtitle: String?,
+                               icon: String,
+                               isExpanded: Bool?) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.black)
+                .frame(width: 32, height: 32)
+                .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title.uppercased())
-                    .font(.system(size: 13, weight: .black, design: .monospaced))
-                    .tracking(1.2)
+                    .font(.system(size: 12, weight: .black, design: .monospaced))
+                    .tracking(0.8)
                     .foregroundStyle(AppTheme.textPrimary)
+
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .lineLimit(1)
+                }
             }
 
-            content()
+            Spacer(minLength: 0)
+
+            if let isExpanded {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 12, weight: .black))
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                    .animation(.spring(response: 0.30, dampingFraction: 0.90), value: isExpanded)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 16)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.black.opacity(0.42))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
     }
 
-    private func subsectionLabel(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.system(size: 10, weight: .black, design: .monospaced))
-            .tracking(1.0)
-            .foregroundStyle(AppTheme.textSecondary)
-    }
+    private func settingsRow<Content: View>(title: String,
+                                            detail: String? = nil,
+                                            isEnabled: Bool = true,
+                                            @ViewBuilder controls: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
 
-    private func settingsSupportingText(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(AppTheme.textSecondary)
-            .lineSpacing(3)
-            .fixedSize(horizontal: false, vertical: true)
-    }
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
 
-    private func settingsDivider() -> some View {
-        Color.clear.frame(height: 2)
-    }
+                Spacer(minLength: 0)
+            }
 
-    private func settingsSubsection<Content: View>(title: String,
-                                                   @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            subsectionLabel(title)
-            content()
+            controls()
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.black.opacity(0.28))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.05), lineWidth: 1)
-        )
-    }
-
-    private func selectionButton(title: String,
-                                 isSelected: Bool,
-                                 action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
-                .frame(maxWidth: .infinity)
-                .frame(height: 40)
-                .metalRoundedPanel(cornerRadius: 12, isActive: isSelected)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .opacity(isEnabled ? 1 : 0.48)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.white.opacity(0.055))
+                .frame(height: 1)
         }
-        .buttonStyle(.plain)
     }
 
-    private func settingsButtonGrid<Content: View>(minimumWidth: CGFloat = 110,
-                                                   @ViewBuilder content: () -> Content) -> some View {
+    private func sliderRow(title: String,
+                           valueText: String,
+                           value: Binding<Double>,
+                           range: ClosedRange<Double>,
+                           tint: Color) -> some View {
+        settingsRow(title: title, detail: valueText) {
+            Slider(value: value, in: range, step: 1)
+                .tint(tint)
+                .frame(minWidth: 156)
+        }
+    }
+
+    private func optionStrip<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: minimumWidth), spacing: 8, alignment: .leading)],
+            columns: [
+                GridItem(.adaptive(minimum: 76), spacing: 8, alignment: .leading)
+            ],
             alignment: .leading,
             spacing: 8
         ) {
@@ -2599,64 +2446,52 @@ private struct CameraSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func frameRateButton(fps: Int,
+    private func selectionButton(title: String,
                                  isSelected: Bool,
                                  action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 1) {
-                Text("\(fps)")
-                    .font(.system(size: 14, weight: .bold, design: .monospaced))
-
-                Text("FPS")
-                    .font(.system(size: 9, weight: .black, design: .monospaced))
-                    .tracking(0.5)
-            }
-            .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
-            .frame(maxWidth: .infinity)
-            .frame(height: 42)
-            .metalRoundedPanel(cornerRadius: 12, isActive: isSelected)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func lockChip(title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
             Text(title)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundStyle(isOn ? Color.black : AppTheme.textPrimary)
+                .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .frame(height: 34)
                 .frame(maxWidth: .infinity)
-                .metalRoundedPanel(cornerRadius: 12, isActive: isOn)
+                .metalRoundedPanel(cornerRadius: 9, isActive: isSelected)
         }
         .buttonStyle(.plain)
     }
 
-    private func settingsActionButton(title: String,
-                                      detail: String,
-                                      action: @escaping () -> Void) -> some View {
+    private func actionChip(title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: 6) {
                 Text(title)
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(AppTheme.textPrimary)
-
-                Spacer(minLength: 0)
-
-                Text(detail)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(AppTheme.accent)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .lineLimit(1)
+                    .minimumScaleFactor(0.82)
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(AppTheme.textSecondary)
+                    .font(.system(size: 10, weight: .black))
             }
+            .foregroundStyle(AppTheme.textPrimary)
             .padding(.horizontal, 12)
-            .frame(height: 38)
-            .metalRoundedPanel(cornerRadius: 12)
+            .frame(height: 34)
+            .frame(maxWidth: .infinity)
+            .metalRoundedPanel(cornerRadius: 9)
         }
         .buttonStyle(.plain)
+    }
+}
+
+private extension View {
+    func settingsPanelStyle() -> some View {
+        self
+            .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.white.opacity(0.09), lineWidth: 1)
+            )
     }
 }
 
