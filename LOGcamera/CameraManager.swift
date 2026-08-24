@@ -259,6 +259,22 @@ enum PhotoCompanionFormat: String, CaseIterable, Identifiable {
     }
 }
 
+enum PhotoRAWFormat: String, CaseIterable, Identifiable {
+    case appleProRAW
+    case bayerRAW
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .appleProRAW:
+            return "ProRAW"
+        case .bayerRAW:
+            return "Pure RAW"
+        }
+    }
+}
+
 enum PhotoResolutionOption: String, CaseIterable, Identifiable {
     case full
     case twelveMP
@@ -377,6 +393,7 @@ final class CameraManager: NSObject, ObservableObject {
         static let videoManualFocusPosition = "camera.videoManualFocusPosition"
         static let photoManualFocusEnabled = "camera.photoManualFocusEnabled"
         static let photoManualFocusPosition = "camera.photoManualFocusPosition"
+        static let photoRAWFormat = "camera.photoRAWFormat"
         static let photoCompanionFormat = "camera.photoCompanionFormat"
         static let photoResolutionOption = "camera.photoResolutionOption"
         static let photoDefaultWideFocalLength = "camera.photoDefaultWideFocalLength"
@@ -438,6 +455,10 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var photoUsesManualWhiteBalance = false
     @Published private(set) var appleProRAWSupported = false
     @Published private(set) var appleProRAWEnabled = false
+    @Published private(set) var bayerRAWSupported = false
+    @Published var photoRAWFormat: PhotoRAWFormat = .appleProRAW {
+        didSet { UserDefaults.standard.set(photoRAWFormat.rawValue, forKey: SettingsKey.photoRAWFormat) }
+    }
     @Published var photoCompanionFormat: PhotoCompanionFormat = .dngOnly {
         didSet { UserDefaults.standard.set(photoCompanionFormat.rawValue, forKey: SettingsKey.photoCompanionFormat) }
     }
@@ -736,20 +757,20 @@ final class CameraManager: NSObject, ObservableObject {
         case .video:
             return "4K • \(selectedFrameRate) fps • \(selectedVideoCodec.title) • \(colorProfile.title)"
         case .photo:
-            return appleProRAWEnabled ? "ProRAW DNG" : "ProRAW Unavailable"
+            return canCapturePhoto ? "\(photoRAWFormat.title) DNG" : "\(photoRAWFormat.title) Unavailable"
         }
     }
 
     var photoBadgeTitle: String {
-        guard appleProRAWEnabled else { return "RAW Off" }
+        guard canCapturePhoto else { return "RAW Off" }
 
         switch photoCompanionFormat {
         case .dngOnly:
-            return "ProRAW"
+            return photoRAWFormat.title
         case .dngPlusHEIC:
-            return "ProRAW + HEIC"
+            return "\(photoRAWFormat.title) + HEIC"
         case .dngPlusJPEG:
-            return "ProRAW + JPG"
+            return "\(photoRAWFormat.title) + JPG"
         }
     }
 
@@ -763,7 +784,10 @@ final class CameraManager: NSObject, ObservableObject {
     var lensPickerOptions: [LensOption] {
         var seenSelectorIDs = Set<String>()
         return availableLenses.filter { lens in
-            seenSelectorIDs.insert(lens.selectorID).inserted
+            if captureMode == .photo, photoRAWFormat == .bayerRAW, abs(lens.zoomFactor - 1.0) >= 0.01 {
+                return false
+            }
+            return seenSelectorIDs.insert(lens.selectorID).inserted
         }
     }
 
@@ -957,7 +981,19 @@ final class CameraManager: NSObject, ObservableObject {
         photoCompanionFormat = format
     }
 
+    func selectPhotoRAWFormat(_ format: PhotoRAWFormat) {
+        photoRAWFormat = format
+        if format == .bayerRAW {
+            photoResolutionOption = .twelveMP
+            photoDefaultWideFocalLength = .mm24
+        }
+        if isSessionConfigured {
+            reconfigureActiveLens()
+        }
+    }
+
     func selectPhotoResolutionOption(_ option: PhotoResolutionOption) {
+        guard photoRAWFormat != .bayerRAW || option == .twelveMP else { return }
         photoResolutionOption = option
         if isSessionConfigured {
             reconfigureActiveLens()
@@ -965,6 +1001,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func selectPhotoDefaultWideFocalLength(_ focalLength: PhotoDefaultWideFocalLength) {
+        guard photoRAWFormat != .bayerRAW || focalLength == .mm24 else { return }
         photoDefaultWideFocalLength = focalLength
     }
 
@@ -1194,6 +1231,9 @@ final class CameraManager: NSObject, ObservableObject {
             defer {
                 self.session.commitConfiguration()
                 self.configureOutput(mode: resolvedMode)
+                if resolvedMode == .photo {
+                    self.refreshPhotoCaptureAvailability()
+                }
                 self.finishCaptureModeSwitch(to: resolvedMode)
             }
 
@@ -1221,6 +1261,7 @@ final class CameraManager: NSObject, ObservableObject {
                             self.canRecord = false
                             self.canCapturePhoto = false
                             self.appleProRAWEnabled = false
+                            self.bayerRAWSupported = false
                         }
                     }
                     return
@@ -1905,18 +1946,18 @@ final class CameraManager: NSObject, ObservableObject {
         guard captureMode == .photo else { return }
         guard !isPhotoCaptureInProgress else { return }
         guard canCapturePhoto else {
-            presentStatusMessage("ProRAW capture is unavailable for the current lens.")
+            presentStatusMessage("\(photoRAWFormat.title) capture is unavailable for the current lens.")
             return
         }
 
-        sessionQueue.async {
+        sessionQueue.async { [self] in
             guard !self.isPhotoCaptureInProgress else { return }
             guard let device = self.videoInput?.device ?? self.activeDevice else {
                 self.presentStatusMessage("Camera unavailable.")
                 return
             }
             guard let settings = self.makePhotoSettings(for: device) else {
-                self.presentStatusMessage("Could not configure ProRAW capture.")
+                self.presentStatusMessage("Could not configure \(self.photoRAWFormat.title) capture.")
                 return
             }
 
@@ -1964,8 +2005,21 @@ final class CameraManager: NSObject, ObservableObject {
         return photoOutput.availableRawPhotoPixelFormatTypes.first(where: AVCapturePhotoOutput.isAppleProRAWPixelFormat)
     }
 
+    private func preferredBayerRAWPixelFormatForCapture() -> OSType? {
+        photoOutput.availableRawPhotoPixelFormatTypes.first(where: AVCapturePhotoOutput.isBayerRAWPixelFormat)
+    }
+
+    private func preferredRAWPixelFormatForCapture() -> OSType? {
+        switch photoRAWFormat {
+        case .appleProRAW:
+            return preferredAppleProRAWPixelFormatForCapture()
+        case .bayerRAW:
+            return preferredBayerRAWPixelFormatForCapture()
+        }
+    }
+
     private func makePhotoSettings(for device: AVCaptureDevice) -> AVCapturePhotoSettings? {
-        guard let rawPixelType = preferredAppleProRAWPixelFormatForCapture() else { return nil }
+        guard let rawPixelType = preferredRAWPixelFormatForCapture() else { return nil }
         let processedConfiguration: ProcessedPhotoCaptureConfiguration?
 
         switch photoCompanionFormat {
@@ -2012,8 +2066,9 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func applyPhotoQualityPrioritization(to settings: AVCapturePhotoSettings,
                                                  manualExposureActive: Bool) {
-        if manualExposureActive {
+        if photoRAWFormat == .bayerRAW || manualExposureActive {
             // Balanced/quality photo processing may override custom ISO and shutter values.
+            // Bayer RAW also requires speed prioritization, regardless of exposure mode.
             settings.photoQualityPrioritization = .speed
         } else {
             settings.photoQualityPrioritization = .quality
@@ -2230,7 +2285,6 @@ final class CameraManager: NSObject, ObservableObject {
             }
 
             self.installAudioInputIfPossible()
-
             self.installPhotoOutputIfPossible()
             self.installDataOutputsIfPossible()
 
@@ -2241,6 +2295,9 @@ final class CameraManager: NSObject, ObservableObject {
             self.isSessionConfigured = true
             self.session.startRunning()
             self.configureOutput()
+            if self.captureMode == .photo {
+                self.refreshPhotoCaptureAvailability()
+            }
         }
     }
 
@@ -2725,6 +2782,9 @@ final class CameraManager: NSObject, ObservableObject {
             self.configureDeviceForCurrentSelection(inConfiguration: true)
             self.session.commitConfiguration()
             self.configureOutput()
+            if self.captureMode == .photo {
+                self.refreshPhotoCaptureAvailability()
+            }
         }
     }
 
@@ -2733,7 +2793,15 @@ final class CameraManager: NSObject, ObservableObject {
                                                     preferredLens: LensOption? = nil) {
         guard let device = videoInput?.device ?? activeDevice else { return }
         let targetMode = mode ?? captureMode
-        let resolvedLens = resolvedLensOption(for: device, mode: targetMode, preferredLens: preferredLens)
+        let requestedLens = resolvedLensOption(for: device, mode: targetMode, preferredLens: preferredLens)
+        let resolvedLens: LensOption?
+        if targetMode == .photo, photoRAWFormat == .bayerRAW {
+            resolvedLens = lensOptions.first(where: {
+                $0.deviceUniqueID == device.uniqueID && abs($0.zoomFactor - 1.0) < 0.01
+            }) ?? requestedLens
+        } else {
+            resolvedLens = requestedLens
+        }
         let targetZoomFactor = resolvedLens?.zoomFactor ?? 1.0
         let targetManualFocusEnabled = storedManualFocusEnabled(for: targetMode)
         let targetManualFocusPosition = storedManualFocusPosition(for: targetMode)
@@ -2741,7 +2809,7 @@ final class CameraManager: NSObject, ObservableObject {
         do {
             if targetMode == .photo {
                 guard let photoFormat = selectBestPhotoFormat(for: device) else {
-                    throw CameraConfigurationError(message: "Selected lens does not support ProRAW capture.")
+                    throw CameraConfigurationError(message: "Selected lens does not support RAW capture.")
                 }
 
                 try device.lockForConfiguration()
@@ -2825,6 +2893,7 @@ final class CameraManager: NSObject, ObservableObject {
                 self.canRecord = false
                 self.canCapturePhoto = false
                 self.appleProRAWEnabled = false
+                self.bayerRAWSupported = false
             }
             presentStatusMessage(error.message)
         } catch {
@@ -2833,6 +2902,7 @@ final class CameraManager: NSObject, ObservableObject {
                 self.canRecord = false
                 self.canCapturePhoto = false
                 self.appleProRAWEnabled = false
+                self.bayerRAWSupported = false
             }
             presentStatusMessage("Camera configuration failed.")
         }
@@ -2893,6 +2963,16 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func updatePhotoOutputConfiguration(for device: AVCaptureDevice, inConfiguration: Bool) {
+        if photoOutput.maxPhotoQualityPrioritization != .quality {
+            photoOutput.maxPhotoQualityPrioritization = .quality
+        }
+
+        if photoRAWFormat == .bayerRAW,
+           let connection = photoOutput.connection(with: .video),
+           connection.videoScaleAndCropFactor != 1.0 {
+            connection.videoScaleAndCropFactor = 1.0
+        }
+
         if let dimensions = preferredPhotoDimensions(for: device) {
             let current = photoOutput.maxPhotoDimensions
             if current.width != dimensions.width || current.height != dimensions.height {
@@ -2900,37 +2980,59 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
 
-        guard #available(iOS 14.3, *) else {
-            DispatchQueue.main.async {
-                self.appleProRAWSupported = false
-                self.appleProRAWEnabled = false
-                self.canCapturePhoto = false
-            }
-            return
-        }
-
-        let supported = photoOutput.isAppleProRAWSupported
-        if photoOutput.isAppleProRAWEnabled != supported {
-            if inConfiguration {
-                photoOutput.isAppleProRAWEnabled = supported
-            } else {
-                session.beginConfiguration()
-                photoOutput.isAppleProRAWEnabled = supported
-                session.commitConfiguration()
+        var proRAWSupported = false
+        if #available(iOS 14.3, *) {
+            proRAWSupported = photoOutput.isAppleProRAWSupported
+            let shouldEnableProRAW = proRAWSupported && photoRAWFormat == .appleProRAW
+            if photoOutput.isAppleProRAWEnabled != shouldEnableProRAW {
+                if inConfiguration {
+                    photoOutput.isAppleProRAWEnabled = shouldEnableProRAW
+                } else {
+                    session.beginConfiguration()
+                    photoOutput.isAppleProRAWEnabled = shouldEnableProRAW
+                    session.commitConfiguration()
+                }
             }
         }
 
-        let enabled = supported && preferredAppleProRAWPixelFormatForCapture() != nil
+        refreshPhotoCaptureAvailability()
+    }
+
+    private func refreshPhotoCaptureAvailability() {
+        let proRAWSupported: Bool
+        if #available(iOS 14.3, *) {
+            proRAWSupported = photoOutput.isAppleProRAWSupported
+        } else {
+            proRAWSupported = false
+        }
+
+        let availableRAWFormats = photoOutput.availableRawPhotoPixelFormatTypes
+        let proRAWEnabled = photoOutput.isAppleProRAWEnabled &&
+            availableRAWFormats.contains(where: AVCapturePhotoOutput.isAppleProRAWPixelFormat)
+        let bayerRAWEnabled = availableRAWFormats.contains(where: AVCapturePhotoOutput.isBayerRAWPixelFormat)
+        let selectedFormatEnabled: Bool
+        switch photoRAWFormat {
+        case .appleProRAW:
+            selectedFormatEnabled = proRAWEnabled
+        case .bayerRAW:
+            selectedFormatEnabled = bayerRAWEnabled
+        }
+
         DispatchQueue.main.async {
-            self.appleProRAWSupported = supported
-            self.appleProRAWEnabled = enabled
-            self.canCapturePhoto = enabled
+            self.appleProRAWSupported = proRAWSupported
+            self.appleProRAWEnabled = proRAWEnabled
+            self.bayerRAWSupported = bayerRAWEnabled
+            self.canCapturePhoto = selectedFormatEnabled
         }
     }
 
     private func preferredPhotoDimensions(for device: AVCaptureDevice) -> CMVideoDimensions? {
         let valid = device.activeFormat.supportedMaxPhotoDimensions.filter { $0.width > 0 && $0.height > 0 }
         guard !valid.isEmpty else { return nil }
+
+        if photoRAWFormat == .bayerRAW {
+            return twelveMPPhotoDimensions(from: valid)
+        }
 
         switch photoResolutionOption {
         case .full:
@@ -2939,22 +3041,26 @@ final class CameraManager: NSObject, ObservableObject {
             }
 
         case .twelveMP:
-            let targetPixels: Int64 = 12_500_000
-            let preferredBelowTarget = valid
-                .filter { Int64($0.width) * Int64($0.height) <= targetPixels }
-                .max { lhs, rhs in
-                    Int64(lhs.width) * Int64(lhs.height) < Int64(rhs.width) * Int64(rhs.height)
-                }
+            return twelveMPPhotoDimensions(from: valid)
+        }
+    }
 
-            if let preferredBelowTarget {
-                return preferredBelowTarget
+    private func twelveMPPhotoDimensions(from dimensions: [CMVideoDimensions]) -> CMVideoDimensions? {
+        let targetPixels: Int64 = 12_500_000
+        let preferredBelowTarget = dimensions
+            .filter { Int64($0.width) * Int64($0.height) <= targetPixels }
+            .max { lhs, rhs in
+                Int64(lhs.width) * Int64(lhs.height) < Int64(rhs.width) * Int64(rhs.height)
             }
 
-            return valid.min { lhs, rhs in
-                let lhsPixels = Int64(lhs.width) * Int64(lhs.height)
-                let rhsPixels = Int64(rhs.width) * Int64(rhs.height)
-                return abs(lhsPixels - 12_000_000) < abs(rhsPixels - 12_000_000)
-            }
+        if let preferredBelowTarget {
+            return preferredBelowTarget
+        }
+
+        return dimensions.min { lhs, rhs in
+            let lhsPixels = Int64(lhs.width) * Int64(lhs.height)
+            let rhsPixels = Int64(rhs.width) * Int64(rhs.height)
+            return abs(lhsPixels - 12_000_000) < abs(rhsPixels - 12_000_000)
         }
     }
 
@@ -3874,9 +3980,14 @@ final class CameraManager: NSObject, ObservableObject {
             photoCompanionFormat = companionFormat
         }
 
+        if let savedPhotoRAWFormat = defaults.string(forKey: SettingsKey.photoRAWFormat),
+           let rawFormat = PhotoRAWFormat(rawValue: savedPhotoRAWFormat) {
+            photoRAWFormat = rawFormat
+        }
+
         if let savedPhotoResolutionOption = defaults.string(forKey: SettingsKey.photoResolutionOption),
            let resolutionOption = PhotoResolutionOption(rawValue: savedPhotoResolutionOption) {
-            photoResolutionOption = resolutionOption
+            photoResolutionOption = photoRAWFormat == .bayerRAW ? .twelveMP : resolutionOption
         }
 
         if let savedPhotoDefaultWideFocalLength = defaults.string(forKey: SettingsKey.photoDefaultWideFocalLength),
@@ -3981,7 +4092,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func updateFocus(at point: CGPoint, shouldLockAfterFocus: Bool) {
-        sessionQueue.async {
+        sessionQueue.async { [self] in
             self.pendingFocusLockWorkItem?.cancel()
             guard let device = self.videoInput?.device ?? self.activeDevice else { return }
 
@@ -4179,7 +4290,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func presentStatusMessage(_ message: String) {
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [self] in
             self.statusMessageDismissWorkItem?.cancel()
             self.statusMessage = message
 

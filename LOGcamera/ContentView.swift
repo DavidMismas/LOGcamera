@@ -1962,7 +1962,9 @@ private struct CameraSettingsView: View {
     private var photoSection: some View {
         collapsiblePanel(
             title: "Photo",
-            subtitle: cameraManager.appleProRAWEnabled ? "ProRAW ready" : "ProRAW unavailable",
+            subtitle: cameraManager.canCapturePhoto
+                ? "\(cameraManager.photoRAWFormat.title) ready"
+                : "\(cameraManager.photoRAWFormat.title) unavailable",
             icon: "camera.fill",
             isExpanded: $isPhotoExpanded
         ) {
@@ -1981,11 +1983,35 @@ private struct CameraSettingsView: View {
                         ) {
                             cameraManager.selectPhotoDefaultWideFocalLength(focalLength)
                         }
+                        .disabled(cameraManager.photoRAWFormat == .bayerRAW && focalLength != .mm24)
+                        .opacity(cameraManager.photoRAWFormat == .bayerRAW && focalLength != .mm24 ? 0.45 : 1)
                     }
                 }
             }
 
-            settingsRow(title: "Companion", detail: cameraManager.appleProRAWEnabled ? "DNG base" : "RAW off") {
+            settingsRow(title: "RAW Format") {
+                VStack(alignment: .leading, spacing: 7) {
+                    optionStrip {
+                        ForEach(PhotoRAWFormat.allCases) { format in
+                            selectionButton(
+                                title: format.title,
+                                isSelected: cameraManager.photoRAWFormat == format
+                            ) {
+                                cameraManager.selectPhotoRAWFormat(format)
+                            }
+                        }
+                    }
+
+                    if cameraManager.photoRAWFormat == .bayerRAW,
+                       !cameraManager.bayerRAWSupported {
+                        Text("Pure RAW is not exposed by the current iOS camera pipeline. Select ProRAW to continue shooting.")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.yellow.opacity(0.85))
+                    }
+                }
+            }
+
+            settingsRow(title: "Companion", detail: cameraManager.canCapturePhoto ? "DNG base" : "RAW off") {
                 optionStrip {
                     ForEach(PhotoCompanionFormat.allCases) { format in
                         selectionButton(
@@ -1999,15 +2025,23 @@ private struct CameraSettingsView: View {
             }
 
             settingsRow(title: "Resolution") {
-                optionStrip {
-                    ForEach(PhotoResolutionOption.allCases) { option in
-                        selectionButton(
-                            title: option.title,
-                            isSelected: cameraManager.photoResolutionOption == option
-                        ) {
-                            cameraManager.selectPhotoResolutionOption(option)
+                VStack(alignment: .leading, spacing: 7) {
+                    optionStrip {
+                        ForEach(PhotoResolutionOption.allCases) { option in
+                            selectionButton(
+                                title: option.title,
+                                isSelected: cameraManager.photoResolutionOption == option
+                            ) {
+                                cameraManager.selectPhotoResolutionOption(option)
+                            }
+                            .disabled(cameraManager.photoRAWFormat == .bayerRAW && option == .full)
+                            .opacity(cameraManager.photoRAWFormat == .bayerRAW && option == .full ? 0.45 : 1)
                         }
                     }
+
+                    Text("Manual exposure and Pure RAW support up to 12 MP.")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(AppTheme.textSecondary)
                 }
             }
 
