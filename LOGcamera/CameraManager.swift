@@ -431,6 +431,9 @@ final class CameraManager: NSObject, ObservableObject {
 
     @Published var session = AVCaptureSession()
     @Published private(set) var isAuthorized = false
+    @Published private(set) var cameraAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
+    @Published private(set) var microphoneAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+    @Published private(set) var photoLibraryAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .addOnly)
     @Published private(set) var availableLenses: [LensOption] = []
     @Published private(set) var activeLensID: String?
     @Published private(set) var activeDevice: AVCaptureDevice?
@@ -923,7 +926,7 @@ final class CameraManager: NSObject, ObservableObject {
         purgeTemporaryCaptureFiles()
         refreshMicrophoneModeStatus()
         observeAudioRouteChanges()
-        checkPermissions()
+        refreshPermissionStatuses(setupCameraIfAuthorized: true)
     }
 
     deinit {
@@ -935,6 +938,7 @@ final class CameraManager: NSObject, ObservableObject {
     func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .active:
+            refreshPermissionStatuses(setupCameraIfAuthorized: true)
             refreshMicrophoneModeStatus()
             refreshAudioInputConfiguration()
             startSession()
@@ -2206,51 +2210,79 @@ final class CameraManager: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + feedbackDuration, execute: dismissWorkItem)
     }
 
-    private func checkPermissions() {
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized:
-            isAuthorized = true
-            requestAudioPermissionAndSetup()
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                DispatchQueue.main.async {
-                    self.isAuthorized = granted
-                    if granted {
-                        self.requestAudioPermissionAndSetup()
-                    }
-                }
+    func requestCameraPermission(completion: @escaping (Bool) -> Void) {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        guard status == .notDetermined else {
+            refreshPermissionStatuses(setupCameraIfAuthorized: true)
+            completion(status == .authorized)
+            return
+        }
+
+        AVCaptureDevice.requestAccess(for: .video) { granted in
+            DispatchQueue.main.async {
+                self.refreshPermissionStatuses(setupCameraIfAuthorized: granted)
+                completion(granted)
             }
-        default:
-            isAuthorized = false
         }
     }
 
-    private func requestAudioPermissionAndSetup() {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized, .denied, .restricted:
-            requestPhotoLibraryPermissionIfNeeded()
-            setupSessionIfNeeded()
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { _ in
-                DispatchQueue.main.async {
-                    self.requestPhotoLibraryPermissionIfNeeded()
-                    self.setupSessionIfNeeded()
+    func requestMicrophonePermission(completion: @escaping (Bool) -> Void) {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        guard status == .notDetermined else {
+            refreshPermissionStatuses(setupCameraIfAuthorized: true)
+            completion(status == .authorized)
+            return
+        }
+
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            DispatchQueue.main.async {
+                self.refreshPermissionStatuses(setupCameraIfAuthorized: true)
+                if granted {
+                    self.installAudioInputAfterAuthorizationIfNeeded()
                 }
+                completion(granted)
             }
-        @unknown default:
-            requestPhotoLibraryPermissionIfNeeded()
+        }
+    }
+
+    func requestPhotoLibraryPermission(completion: @escaping (Bool) -> Void) {
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        guard status == .notDetermined else {
+            refreshPermissionStatuses(setupCameraIfAuthorized: true)
+            completion(status == .authorized || status == .limited)
+            return
+        }
+
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            DispatchQueue.main.async {
+                self.refreshPermissionStatuses(setupCameraIfAuthorized: true)
+                completion(status == .authorized || status == .limited)
+            }
+        }
+    }
+
+    private func refreshPermissionStatuses(setupCameraIfAuthorized: Bool) {
+        let cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        cameraAuthorizationStatus = cameraStatus
+        microphoneAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        photoLibraryAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        isAuthorized = cameraStatus == .authorized
+
+        if setupCameraIfAuthorized, cameraStatus == .authorized {
             setupSessionIfNeeded()
         }
     }
 
-    private func requestPhotoLibraryPermissionIfNeeded() {
-        switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
-        case .authorized, .limited, .denied, .restricted:
-            break
-        case .notDetermined:
-            PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in }
-        @unknown default:
-            break
+    private func installAudioInputAfterAuthorizationIfNeeded() {
+        sessionQueue.async {
+            guard self.isSessionConfigured, self.audioInput == nil else {
+                self.refreshAudioInputConfiguration()
+                return
+            }
+
+            self.session.beginConfiguration()
+            self.installAudioInputIfPossible()
+            self.session.commitConfiguration()
         }
     }
 
@@ -2808,17 +2840,9 @@ final class CameraManager: NSObject, ObservableObject {
 
         do {
             if targetMode == .photo {
-                guard let photoFormat = selectBestPhotoFormat(for: device) else {
-                    throw CameraConfigurationError(message: "Selected lens does not support RAW capture.")
-                }
-
+                // Keep the format selected by the .photo session preset. Reassigning
+                // activeFormat here removes Bayer RAW from the available photo formats.
                 try device.lockForConfiguration()
-                device.activeFormat = photoFormat
-                device.activeVideoMinFrameDuration = .invalid
-                device.activeVideoMaxFrameDuration = .invalid
-                if let photoColorSpace = preferredPhotoColorSpace(for: photoFormat) {
-                    device.activeColorSpace = photoColorSpace
-                }
                 if device.isFocusModeSupported(.continuousAutoFocus) && !targetManualFocusEnabled {
                     device.focusMode = .continuousAutoFocus
                 }
@@ -2924,42 +2948,6 @@ final class CameraManager: NSObject, ObservableObject {
             from: lensOptions.filter { $0.deviceUniqueID == device.uniqueID },
             for: mode
         )
-    }
-
-    private func selectBestPhotoFormat(for device: AVCaptureDevice) -> AVCaptureDevice.Format? {
-        device.formats
-            .filter { !$0.supportedMaxPhotoDimensions.isEmpty }
-            .sorted { lhs, rhs in
-                if lhs.isHighestPhotoQualitySupported != rhs.isHighestPhotoQualitySupported {
-                    return lhs.isHighestPhotoQualitySupported && !rhs.isHighestPhotoQualitySupported
-                }
-
-                if lhs.isHighPhotoQualitySupported != rhs.isHighPhotoQualitySupported {
-                    return lhs.isHighPhotoQualitySupported && !rhs.isHighPhotoQualitySupported
-                }
-
-                let lhsPhotoPixels = maximumPhotoPixelCount(for: lhs)
-                let rhsPhotoPixels = maximumPhotoPixelCount(for: rhs)
-                if lhsPhotoPixels != rhsPhotoPixels {
-                    return lhsPhotoPixels > rhsPhotoPixels
-                }
-
-                let lhsVideoDimensions = CMVideoFormatDescriptionGetDimensions(lhs.formatDescription)
-                let rhsVideoDimensions = CMVideoFormatDescriptionGetDimensions(rhs.formatDescription)
-                let lhsVideoPixels = Int64(lhsVideoDimensions.width) * Int64(lhsVideoDimensions.height)
-                let rhsVideoPixels = Int64(rhsVideoDimensions.width) * Int64(rhsVideoDimensions.height)
-                return lhsVideoPixels > rhsVideoPixels
-            }
-            .first
-    }
-
-    private func maximumPhotoPixelCount(for format: AVCaptureDevice.Format) -> Int64 {
-        format.supportedMaxPhotoDimensions.reduce(into: Int64.zero) { best, dimensions in
-            let pixelCount = Int64(dimensions.width) * Int64(dimensions.height)
-            if pixelCount > best {
-                best = pixelCount
-            }
-        }
     }
 
     private func updatePhotoOutputConfiguration(for device: AVCaptureDevice, inConfiguration: Bool) {
@@ -3124,17 +3112,6 @@ final class CameraManager: NSObject, ObservableObject {
             return .appleLog
         }
         return .unavailable
-    }
-
-    private func preferredPhotoColorSpace(for format: AVCaptureDevice.Format) -> AVCaptureColorSpace? {
-        let colorSpaces = supportedColorSpaces(for: format)
-        if colorSpaces.contains(.P3_D65) {
-            return .P3_D65
-        }
-        if colorSpaces.contains(.sRGB) {
-            return .sRGB
-        }
-        return colorSpaces.first
     }
 
     private func supportedColorSpaces(for format: AVCaptureDevice.Format) -> [AVCaptureColorSpace] {

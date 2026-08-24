@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import Photos
 import UIKit
 
 private enum AppTheme {
@@ -97,12 +98,19 @@ private extension View {
 }
 
 struct ContentView: View {
+    private static let currentOnboardingVersion = 1
+
     @StateObject private var cameraManager = CameraManager()
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("app.onboardingVersion") private var onboardingVersion = 0
 
     var body: some View {
         Group {
-            if cameraManager.isAuthorized {
+            if onboardingVersion < Self.currentOnboardingVersion {
+                RawlightOnboardingView(cameraManager: cameraManager, mode: .firstLaunch) {
+                    onboardingVersion = Self.currentOnboardingVersion
+                }
+            } else if cameraManager.isAuthorized {
                 CameraScreen(cameraManager: cameraManager)
             } else {
                 PermissionView(cameraManager: cameraManager)
@@ -1877,6 +1885,7 @@ private struct CameraSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var isPhotoExpanded = true
     @State private var isVideoExpanded = true
+    @State private var showsQuickGuide = false
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -1897,6 +1906,11 @@ private struct CameraSettingsView: View {
             stickyHeader
         }
         .preferredColorScheme(.dark)
+        .fullScreenCover(isPresented: $showsQuickGuide) {
+            RawlightOnboardingView(cameraManager: cameraManager, mode: .quickGuide) {
+                showsQuickGuide = false
+            }
+        }
     }
 
     private var settingsBackground: some View {
@@ -1956,6 +1970,12 @@ private struct CameraSettingsView: View {
                     }
                 }
             }
+
+            settingsRow(title: "Help") {
+                actionChip(title: "Quick Guide") {
+                    showsQuickGuide = true
+                }
+            }
         }
     }
 
@@ -2002,7 +2022,8 @@ private struct CameraSettingsView: View {
                         }
                     }
 
-                    if cameraManager.photoRAWFormat == .bayerRAW,
+                    if cameraManager.captureMode == .photo,
+                       cameraManager.photoRAWFormat == .bayerRAW,
                        !cameraManager.bayerRAWSupported {
                         Text("Pure RAW is not exposed by the current iOS camera pipeline. Select ProRAW to continue shooting.")
                             .font(.system(size: 10, weight: .semibold))
@@ -2529,6 +2550,438 @@ private extension View {
     }
 }
 
+private enum RawlightOnboardingMode {
+    case firstLaunch
+    case quickGuide
+}
+
+private struct RawlightOnboardingView: View {
+    private enum Page: CaseIterable {
+        case welcome
+        case camera
+        case photos
+        case microphone
+        case controls
+        case formats
+    }
+
+    private enum PermissionState {
+        case notDetermined
+        case allowed
+        case denied
+    }
+
+    @ObservedObject var cameraManager: CameraManager
+    let mode: RawlightOnboardingMode
+    let onComplete: () -> Void
+
+    @State private var pageIndex = 0
+    @State private var isRequestingPermission = false
+
+    private var pages: [Page] {
+        switch mode {
+        case .firstLaunch:
+            return Page.allCases
+        case .quickGuide:
+            return [.controls, .formats]
+        }
+    }
+
+    private var page: Page {
+        pages[min(pageIndex, pages.count - 1)]
+    }
+
+    var body: some View {
+        ZStack {
+            AppTheme.backgroundGradient.ignoresSafeArea()
+
+            RadialGradient(
+                colors: [Color.white.opacity(0.14), Color.clear],
+                center: .topLeading,
+                startRadius: 10,
+                endRadius: 380
+            )
+            .ignoresSafeArea()
+            .blendMode(.screen)
+
+            VStack(spacing: 0) {
+                header
+
+                ScrollView(.vertical, showsIndicators: false) {
+                    pageContent
+                        .frame(maxWidth: 520)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 20)
+                        .padding(.bottom, 18)
+                }
+                .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+
+                footer
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "camera.aperture")
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(Color.black)
+                .frame(width: 38, height: 38)
+                .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            Text("RAWLIGHT")
+                .font(.system(size: 16, weight: .black, design: .monospaced))
+                .tracking(1.5)
+                .foregroundStyle(AppTheme.textPrimary)
+
+            Spacer(minLength: 0)
+
+            Button(mode == .firstLaunch ? "Skip" : "Close") {
+                onComplete()
+            }
+            .font(.system(size: 12, weight: .bold, design: .monospaced))
+            .foregroundStyle(AppTheme.textSecondary)
+            .buttonStyle(.plain)
+            .frame(minWidth: 48, minHeight: 44)
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 10)
+    }
+
+    @ViewBuilder
+    private var pageContent: some View {
+        VStack(spacing: 22) {
+            heroIcon
+
+            VStack(spacing: 10) {
+                Text(pageTitle)
+                    .font(.system(size: 27, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .multilineTextAlignment(.center)
+
+                Text(pageDescription)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+            }
+
+            switch page {
+            case .camera, .photos, .microphone:
+                permissionStatusPanel
+            case .controls:
+                VStack(spacing: 10) {
+                    guideRow(icon: "hand.tap.fill", title: "TAP TO METER", detail: "Tap the preview to place focus and exposure. Tap again to lock the point.")
+                    guideRow(icon: "slider.horizontal.3", title: "M IS MANUAL", detail: "Use shutter speed, ISO, white balance and manual focus directly above the preview.")
+                    guideRow(icon: "viewfinder", title: "EXPOSURE TOOLS", detail: "Enable zebras, focus peaking and the grid in Settings when you need them.")
+                }
+            case .formats:
+                VStack(spacing: 10) {
+                    guideRow(icon: "wand.and.stars", title: "APPLE ProRAW", detail: "Apple's processed RAW workflow with additional computational image data.")
+                    guideRow(icon: "circle.grid.cross", title: "PURE RAW · 12 MP", detail: "Bayer RAW data from the sensor without Apple ProRAW processing.")
+                    guideRow(icon: "video.fill", title: "APPLE LOG", detail: "Use the Video settings to choose codec, frame rate, monitoring look and audio.")
+                }
+            case .welcome:
+                welcomePanel
+            }
+        }
+    }
+
+    private var heroIcon: some View {
+        Image(systemName: pageIcon)
+            .font(.system(size: 52, weight: .light))
+            .foregroundStyle(AppTheme.textPrimary)
+            .frame(width: 116, height: 116)
+            .background(Color.black.opacity(0.32), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.35), radius: 22, y: 12)
+    }
+
+    private var welcomePanel: some View {
+        HStack(spacing: 0) {
+            welcomeFeature(icon: "camera.fill", title: "PHOTO", detail: "ProRAW + Pure RAW")
+            Rectangle().fill(Color.white.opacity(0.08)).frame(width: 1, height: 52)
+            welcomeFeature(icon: "video.fill", title: "VIDEO", detail: "Apple Log")
+        }
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity)
+        .metalRoundedPanel(cornerRadius: 16)
+    }
+
+    private func welcomeFeature(icon: String, title: String, detail: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(AppTheme.accent)
+            Text(title)
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .tracking(0.8)
+                .foregroundStyle(AppTheme.textPrimary)
+            Text(detail)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(AppTheme.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var permissionStatusPanel: some View {
+        HStack(spacing: 12) {
+            Image(systemName: permissionState == .allowed ? "checkmark.circle.fill" : permissionState == .denied ? "exclamationmark.circle.fill" : "circle.dashed")
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(permissionState == .allowed ? Color.green.opacity(0.9) : permissionState == .denied ? Color.yellow.opacity(0.9) : AppTheme.accent)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(permissionStatusTitle)
+                    .font(.system(size: 12, weight: .black, design: .monospaced))
+                    .foregroundStyle(AppTheme.textPrimary)
+                Text(permissionStatusDetail)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(AppTheme.textSecondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity)
+        .metalRoundedPanel(cornerRadius: 14)
+    }
+
+    private func guideRow(icon: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 13) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.black)
+                .frame(width: 36, height: 36)
+                .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .tracking(0.5)
+                    .foregroundStyle(AppTheme.textPrimary)
+                Text(detail)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity)
+        .metalRoundedPanel(cornerRadius: 14)
+    }
+
+    private var footer: some View {
+        VStack(spacing: 13) {
+            HStack(spacing: 7) {
+                ForEach(pages.indices, id: \.self) { index in
+                    Capsule()
+                        .fill(index == pageIndex ? AppTheme.accent : Color.white.opacity(0.18))
+                        .frame(width: index == pageIndex ? 22 : 7, height: 7)
+                        .animation(.easeOut(duration: 0.2), value: pageIndex)
+                }
+            }
+
+            Button(action: primaryAction) {
+                HStack(spacing: 9) {
+                    if isRequestingPermission {
+                        ProgressView()
+                            .tint(.black)
+                    }
+                    Text(primaryButtonTitle)
+                        .font(.system(size: 13, weight: .black, design: .monospaced))
+                        .tracking(0.5)
+                    if !isRequestingPermission {
+                        Image(systemName: isLastPage ? "checkmark" : "arrow.right")
+                            .font(.system(size: 13, weight: .black))
+                    }
+                }
+                .foregroundStyle(Color.black)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .background(AppTheme.activeGradient, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(isRequestingPermission)
+
+            if isPermissionPage, permissionState == .denied {
+                Button("Continue without access") {
+                    advance()
+                }
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.textSecondary)
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 12)
+        .padding(.bottom, 14)
+        .background(.black.opacity(0.28))
+    }
+
+    private var pageTitle: String {
+        switch page {
+        case .welcome: return "Shoot your way"
+        case .camera: return "Camera access"
+        case .photos: return "Save your shots"
+        case .microphone: return "Record sound"
+        case .controls: return "Stay in control"
+        case .formats: return "Choose your format"
+        }
+    }
+
+    private var pageDescription: String {
+        switch page {
+        case .welcome:
+            return "Manual photography, sensor RAW and Apple Log video in one focused camera."
+        case .camera:
+            return "Rawlight needs camera access to show the live preview and capture photos and video."
+        case .photos:
+            return "Allow add-only Photos access so Rawlight can save your finished captures to your library."
+        case .microphone:
+            return "Microphone access adds sound to video. Photos and silent video remain available without it."
+        case .controls:
+            return "The most important controls stay close to the preview, ready when you need them."
+        case .formats:
+            return "Select the capture pipeline that fits the shot. You can change it anytime in Settings."
+        }
+    }
+
+    private var pageIcon: String {
+        switch page {
+        case .welcome: return "camera.aperture"
+        case .camera: return "camera.fill"
+        case .photos: return "photo.on.rectangle.angled"
+        case .microphone: return "mic.fill"
+        case .controls: return "dial.medium.fill"
+        case .formats: return "circle.grid.cross"
+        }
+    }
+
+    private var isPermissionPage: Bool {
+        page == .camera || page == .photos || page == .microphone
+    }
+
+    private var permissionState: PermissionState {
+        switch page {
+        case .camera:
+            switch cameraManager.cameraAuthorizationStatus {
+            case .authorized: return .allowed
+            case .notDetermined: return .notDetermined
+            default: return .denied
+            }
+        case .microphone:
+            switch cameraManager.microphoneAuthorizationStatus {
+            case .authorized: return .allowed
+            case .notDetermined: return .notDetermined
+            default: return .denied
+            }
+        case .photos:
+            switch cameraManager.photoLibraryAuthorizationStatus {
+            case .authorized, .limited: return .allowed
+            case .notDetermined: return .notDetermined
+            default: return .denied
+            }
+        default:
+            return .allowed
+        }
+    }
+
+    private var permissionStatusTitle: String {
+        switch permissionState {
+        case .notDetermined: return "NOT REQUESTED"
+        case .allowed: return "ACCESS ALLOWED"
+        case .denied: return "ACCESS DISABLED"
+        }
+    }
+
+    private var permissionStatusDetail: String {
+        switch permissionState {
+        case .notDetermined: return "Rawlight will show the system permission next."
+        case .allowed: return "This permission is ready."
+        case .denied: return "You can enable it in the iPhone Settings app."
+        }
+    }
+
+    private var primaryButtonTitle: String {
+        guard isPermissionPage else {
+            if page == .welcome { return "GET STARTED" }
+            return isLastPage ? (mode == .firstLaunch ? "START SHOOTING" : "DONE") : "CONTINUE"
+        }
+
+        switch permissionState {
+        case .notDetermined:
+            switch page {
+            case .camera: return "ALLOW CAMERA"
+            case .photos: return "ALLOW PHOTOS"
+            case .microphone: return "ALLOW MICROPHONE"
+            default: return "CONTINUE"
+            }
+        case .allowed:
+            return "CONTINUE"
+        case .denied:
+            return "OPEN SETTINGS"
+        }
+    }
+
+    private var isLastPage: Bool {
+        pageIndex == pages.count - 1
+    }
+
+    private func primaryAction() {
+        guard isPermissionPage else {
+            advance()
+            return
+        }
+
+        switch permissionState {
+        case .allowed:
+            advance()
+        case .denied:
+            openSettings()
+        case .notDetermined:
+            isRequestingPermission = true
+            let completion: (Bool) -> Void = { _ in
+                isRequestingPermission = false
+                advance()
+            }
+
+            switch page {
+            case .camera:
+                cameraManager.requestCameraPermission(completion: completion)
+            case .photos:
+                cameraManager.requestPhotoLibraryPermission(completion: completion)
+            case .microphone:
+                cameraManager.requestMicrophonePermission(completion: completion)
+            default:
+                isRequestingPermission = false
+                advance()
+            }
+        }
+    }
+
+    private func advance() {
+        guard !isLastPage else {
+            onComplete()
+            return
+        }
+
+        withAnimation(.easeOut(duration: 0.22)) {
+            pageIndex += 1
+        }
+    }
+
+    private func openSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+}
+
 private struct PermissionView: View {
     @ObservedObject var cameraManager: CameraManager
 
@@ -2549,18 +3002,24 @@ private struct PermissionView: View {
                     .font(.system(size: 56, weight: .light))
                     .foregroundStyle(AppTheme.accent)
 
-                Text("LOGcamera needs camera, microphone and Photos access.")
+                Text("Rawlight needs camera access.")
                     .font(.system(size: 24, weight: .bold))
                     .multilineTextAlignment(.center)
 
-                Text("Enable permissions in Settings to capture ProRAW photos and 4K video, then save them to Photos.")
+                Text(cameraManager.cameraAuthorizationStatus == .notDetermined
+                     ? "Allow access to use the live preview and capture photos and video."
+                     : "Enable camera access in Settings to return to the live preview.")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(AppTheme.textSecondary)
                     .multilineTextAlignment(.center)
 
-                Button("Open Settings") {
-                    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-                    UIApplication.shared.open(url)
+                Button(cameraManager.cameraAuthorizationStatus == .notDetermined ? "Allow Camera" : "Open Settings") {
+                    if cameraManager.cameraAuthorizationStatus == .notDetermined {
+                        cameraManager.requestCameraPermission { _ in }
+                    } else {
+                        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                        UIApplication.shared.open(url)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(AppTheme.accentStrong)
