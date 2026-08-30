@@ -212,6 +212,8 @@ private struct CameraScreen: View {
     @State private var activeVideoProAdjustment: VideoProAdjustment?
     @State private var previewControlRotationDegrees: Double = 0
     @State private var isPhotoShutterAnimating = false
+    @State private var isModeTransitionVisible = false
+    @State private var modeTransitionTarget: CaptureMode = .photo
 
     var body: some View {
         ZStack {
@@ -245,6 +247,16 @@ private struct CameraScreen: View {
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
                 .ignoresSafeArea(edges: .horizontal)
             }
+
+            CaptureModeTransitionOverlay(
+                targetMode: modeTransitionTarget,
+                rotationDegrees: previewControlRotationDegrees,
+                isActive: isModeTransitionVisible
+            )
+            .opacity(isModeTransitionVisible ? 1 : 0)
+            .allowsHitTesting(isModeTransitionVisible)
+            .animation(.easeInOut(duration: 0.14), value: isModeTransitionVisible)
+            .zIndex(100)
         }
         .fullScreenCover(isPresented: $showsControlMenu, onDismiss: {
             guard cameraManager.captureMode == .photo,
@@ -284,6 +296,12 @@ private struct CameraScreen: View {
                 showsPhotoExposureBiasPanel = false
                 activePhotoProAdjustment = nil
                 activeVideoProAdjustment = cameraManager.proExposureEnabled ? .iso : nil
+            }
+        }
+        .onChange(of: cameraManager.isSwitchingCaptureMode) { _, isSwitching in
+            guard !isSwitching, isModeTransitionVisible else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                isModeTransitionVisible = false
             }
         }
         .onChange(of: cameraManager.photoProExposureEnabled) { _, isEnabled in
@@ -1393,7 +1411,7 @@ private struct CameraScreen: View {
 
     private var captureModeSwitchButton: some View {
         Button {
-            cameraManager.switchCaptureMode()
+            beginCaptureModeSwitch()
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: cameraManager.captureMode == .video ? "camera.fill" : "video.fill")
@@ -1409,6 +1427,18 @@ private struct CameraScreen: View {
         .buttonStyle(.plain)
         .disabled(cameraManager.isCaptureBusy)
         .rotationEffect(.degrees(previewControlRotationDegrees))
+    }
+
+    private func beginCaptureModeSwitch() {
+        guard !isModeTransitionVisible, !cameraManager.isCaptureBusy else { return }
+        modeTransitionTarget = cameraManager.captureMode == .video ? .photo : .video
+        isModeTransitionVisible = true
+
+        // Let SwiftUI present the lightweight cover before AVFoundation begins
+        // rebuilding the capture session and its Metal-backed preview surfaces.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            cameraManager.switchCaptureMode()
+        }
     }
 
     private var controlsButton: some View {
@@ -3105,6 +3135,80 @@ private struct PermissionView: View {
             }
             .padding(28)
         }
+    }
+}
+
+private struct CaptureModeTransitionOverlay: View {
+    let targetMode: CaptureMode
+    let rotationDegrees: Double
+    let isActive: Bool
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.93)
+
+            RadialGradient(
+                colors: [
+                    AppTheme.accentStrong.opacity(0.68),
+                    AppTheme.accent.opacity(0.12),
+                    Color.clear
+                ],
+                center: .center,
+                startRadius: 8,
+                endRadius: 270
+            )
+
+            Circle()
+                .stroke(AppTheme.accent.opacity(0.18), lineWidth: 1)
+                .frame(width: 230, height: 230)
+                .scaleEffect(isActive ? 1.06 : 0.82)
+                .opacity(isActive ? 0.22 : 0)
+                .animation(.easeOut(duration: 0.55), value: isActive)
+
+            Circle()
+                .stroke(AppTheme.accent.opacity(0.38), lineWidth: 1.5)
+                .frame(width: 156, height: 156)
+                .scaleEffect(isActive ? 0.94 : 1.08)
+                .opacity(isActive ? 1 : 0)
+                .animation(.easeOut(duration: 0.42), value: isActive)
+
+            VStack(spacing: 13) {
+                ZStack {
+                    Circle()
+                        .fill(AppTheme.surfaceGradient)
+                        .frame(width: 88, height: 88)
+                        .overlay(
+                            Circle()
+                                .stroke(AppTheme.accent.opacity(0.88), lineWidth: 2)
+                        )
+                        .shadow(color: AppTheme.accent.opacity(0.32), radius: 16)
+
+                    Image(systemName: targetMode == .photo ? "camera.fill" : "video.fill")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                }
+
+                VStack(spacing: 4) {
+                    Text(targetMode.title.uppercased())
+                        .font(.system(size: 15, weight: .black, design: .monospaced))
+                        .tracking(2.2)
+                        .foregroundStyle(AppTheme.textPrimary)
+
+                    Text("PREPARING MODE")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .tracking(1.2)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(AppTheme.accent)
+            }
+            .rotationEffect(.degrees(rotationDegrees))
+            .scaleEffect(isActive ? 1 : 0.94)
+            .animation(.spring(response: 0.34, dampingFraction: 0.82), value: isActive)
+        }
+        .ignoresSafeArea()
     }
 }
 

@@ -382,16 +382,6 @@ enum ZebraChannel: String, CaseIterable, Identifiable {
         }
     }
 
-    var kernelIndex: Float {
-        switch self {
-        case .red:
-            return 0
-        case .green:
-            return 1
-        case .blue:
-            return 2
-        }
-    }
 }
 
 final class CameraManager: NSObject, ObservableObject {

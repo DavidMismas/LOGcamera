@@ -9,8 +9,6 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
     private let lutProcessor = PreviewLUTProcessor()
     private let stateQueue = DispatchQueue(label: "com.logcamera.zebraOverlayState")
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-    private static let photoRawPreviewExposureEV = -0.58
-
     private var latestFrame: PreviewFrame?
     private var isEnabled = false
     private var threshold: Float = 0.95
@@ -23,12 +21,11 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
                           float threshold,
                           float softness,
                           float stripeWidth,
-                          float channelIndex,
                           float stripeRed,
                           float stripeGreen,
                           float stripeBlue) {
             float3 rgb = clamp(image.rgb, 0.0, 1.0);
-            float signal = channelIndex < 0.5 ? rgb.r : (channelIndex < 1.5 ? rgb.g : rgb.b);
+            float signal = max(rgb.r, max(rgb.g, rgb.b));
             float mask = smoothstep(threshold - softness, threshold + softness, signal);
             if (mask <= 0.001) {
                 return vec4(0.0, 0.0, 0.0, 0.0);
@@ -174,7 +171,6 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
                 threshold,
                 0.015,
                 18.0,
-                channel.kernelIndex,
                 stripeColor.red,
                 stripeColor.green,
                 stripeColor.blue
@@ -190,7 +186,10 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
 
     private func monitoringImage(for frame: PreviewFrame, lookMode: PreviewLookMode) -> CIImage? {
         if frame.captureMode == .photo {
-            return photoRawMatchedImage(for: frame.pixelBuffer)
+            // Measure the original monitoring signal. The visible Photo preview is
+            // intentionally darkened to resemble RAW, but applying that adjustment
+            // before zebra detection makes 80–100% thresholds unreachable.
+            return colorManagedImage(for: frame.pixelBuffer)
         }
 
         switch lookMode {
@@ -216,14 +215,6 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
             filter.setValue(cube.data, forKey: "inputCubeData")
             return filter.outputImage?.cropped(to: rawImage.extent) ?? rawImage
         }
-    }
-
-    private func photoRawMatchedImage(for pixelBuffer: CVPixelBuffer) -> CIImage {
-        colorManagedImage(for: pixelBuffer)
-            .applyingFilter(
-                "CIExposureAdjust",
-                parameters: [kCIInputEVKey: Self.photoRawPreviewExposureEV]
-            )
     }
 
     private func colorManagedImage(for pixelBuffer: CVPixelBuffer) -> CIImage {
