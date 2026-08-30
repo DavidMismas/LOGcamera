@@ -4,22 +4,22 @@ import Photos
 import UIKit
 
 private enum AppTheme {
-    static let accent = Color(red: 0.90, green: 0.91, blue: 0.94)
-    static let accentStrong = Color(red: 0.69, green: 0.72, blue: 0.78)
-    static let surface = Color(red: 0.05, green: 0.05, blue: 0.06)
-    static let surfaceRaised = Color(red: 0.11, green: 0.11, blue: 0.12)
-    static let surfaceLift = Color(red: 0.19, green: 0.19, blue: 0.21)
-    static let border = Color.white.opacity(0.14)
+    static let accent = Color(red: 0.78, green: 0.07, blue: 0.11)
+    static let accentStrong = Color(red: 0.43, green: 0.018, blue: 0.04)
+    static let surface = Color(red: 0.055, green: 0.045, blue: 0.05)
+    static let surfaceRaised = Color(red: 0.12, green: 0.095, blue: 0.10)
+    static let surfaceLift = Color(red: 0.20, green: 0.16, blue: 0.17)
+    static let border = Color(red: 0.90, green: 0.62, blue: 0.64).opacity(0.16)
     static let textPrimary = Color.white.opacity(0.96)
     static let textSecondary = Color.white.opacity(0.62)
-    static let recordLive = Color(red: 0.86, green: 0.24, blue: 0.26)
+    static let recordLive = Color(red: 0.91, green: 0.10, blue: 0.14)
 
     static var backgroundGradient: LinearGradient {
         LinearGradient(
             colors: [
-                Color(red: 0.10, green: 0.10, blue: 0.11),
+                Color(red: 0.15, green: 0.055, blue: 0.07),
                 Color.black,
-                Color(red: 0.13, green: 0.13, blue: 0.15)
+                Color(red: 0.10, green: 0.075, blue: 0.085)
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -41,8 +41,8 @@ private enum AppTheme {
     static var activeGradient: LinearGradient {
         LinearGradient(
             colors: [
-                Color.white.opacity(0.96),
                 accent,
+                recordLive,
                 accentStrong
             ],
             startPoint: .topLeading,
@@ -70,6 +70,7 @@ private extension View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(isActive ? Color.white.opacity(0.20) : AppTheme.border, lineWidth: 1)
             )
+            .shadow(color: isActive ? AppTheme.accent.opacity(0.24) : Color.clear, radius: 8, y: 2)
     }
 
     func metalCapsulePanel(isActive: Bool = false) -> some View {
@@ -82,6 +83,7 @@ private extension View {
                 Capsule()
                     .stroke(isActive ? Color.white.opacity(0.20) : AppTheme.border, lineWidth: 1)
             )
+            .shadow(color: isActive ? AppTheme.accent.opacity(0.22) : Color.clear, radius: 6, y: 2)
     }
 
     func metalCirclePanel(isActive: Bool = false) -> some View {
@@ -94,6 +96,30 @@ private extension View {
                 Circle()
                     .stroke(isActive ? Color.white.opacity(0.20) : AppTheme.border, lineWidth: 1)
             )
+            .shadow(color: isActive ? AppTheme.accent.opacity(0.24) : Color.clear, radius: 7, y: 2)
+    }
+
+    func expandedTapTarget(horizontal: CGFloat = 3, vertical: CGFloat = 8) -> some View {
+        contentShape(
+            .interaction,
+            ExpandedHitRectangle(horizontalExpansion: horizontal, verticalExpansion: vertical)
+        )
+    }
+}
+
+private struct ExpandedHitRectangle: Shape {
+    let horizontalExpansion: CGFloat
+    let verticalExpansion: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        Path(
+            CGRect(
+                x: rect.minX - horizontalExpansion,
+                y: rect.minY - verticalExpansion,
+                width: rect.width + horizontalExpansion * 2,
+                height: rect.height + verticalExpansion * 2
+            )
+        )
     }
 }
 
@@ -185,12 +211,13 @@ private struct CameraScreen: View {
     @State private var activePhotoProAdjustment: PhotoProAdjustment?
     @State private var activeVideoProAdjustment: VideoProAdjustment?
     @State private var previewControlRotationDegrees: Double = 0
+    @State private var isPhotoShutterAnimating = false
 
     var body: some View {
         ZStack {
             AppTheme.backgroundGradient.ignoresSafeArea()
             RadialGradient(
-                colors: [Color.white.opacity(0.10), Color.clear],
+                colors: [AppTheme.accent.opacity(0.16), Color.clear],
                 center: .topLeading,
                 startRadius: 10,
                 endRadius: 280
@@ -814,7 +841,7 @@ private struct CameraScreen: View {
                         set: { cameraManager.setExposureBias(Float($0)) }
                     ),
                     range: Double(cameraManager.videoExposureBiasRange.lowerBound)...Double(cameraManager.videoExposureBiasRange.upperBound),
-                    step: 0.01
+                    step: 0.1
                 )
                 .frame(maxWidth: .infinity)
                 .padding(.top, 2)
@@ -980,12 +1007,13 @@ private struct CameraScreen: View {
                 } label: {
                     Text("0.0")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(isExposureAdjusted ? Color.black : AppTheme.textSecondary)
+                        .foregroundStyle(isExposureAdjusted ? AppTheme.textPrimary : AppTheme.textSecondary)
                         .padding(.horizontal, 8)
                         .frame(height: 22)
                         .metalCapsulePanel(isActive: isExposureAdjusted)
                 }
                 .buttonStyle(.plain)
+                .expandedTapTarget(horizontal: 3, vertical: 11)
                 .disabled(!isExposureAdjusted)
 
                 Text(String(format: "%+.1f EV", cameraManager.exposureBias))
@@ -993,14 +1021,15 @@ private struct CameraScreen: View {
                     .foregroundStyle(AppTheme.textSecondary)
             }
 
-            Slider(
+            SteppedHapticSlider(
                 value: Binding(
                     get: { Double(cameraManager.exposureBias) },
                     set: { cameraManager.setExposureBias(Float($0)) }
                 ),
-                in: Double(cameraManager.videoExposureBiasRange.lowerBound)...Double(cameraManager.videoExposureBiasRange.upperBound)
+                range: Double(cameraManager.videoExposureBiasRange.lowerBound)...Double(cameraManager.videoExposureBiasRange.upperBound),
+                step: 0.1,
+                tint: AppTheme.accent
             )
-            .tint(AppTheme.accent)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -1033,7 +1062,7 @@ private struct CameraScreen: View {
                     set: { cameraManager.setExposureBias(Float($0)) }
                 ),
                 range: Double(cameraManager.videoExposureBiasRange.lowerBound)...Double(cameraManager.videoExposureBiasRange.upperBound),
-                step: 0.01
+                step: 0.1
             )
             .tint(AppTheme.accent)
             .frame(width: 236)
@@ -1045,13 +1074,14 @@ private struct CameraScreen: View {
             } label: {
                 Text("0.0")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(isExposureAdjusted ? Color.black : AppTheme.textSecondary)
+                    .foregroundStyle(isExposureAdjusted ? AppTheme.textPrimary : AppTheme.textSecondary)
                     .padding(.horizontal, 8)
                     .frame(height: 22)
                     .metalCapsulePanel(isActive: isExposureAdjusted)
                     .rotationEffect(.degrees(previewControlRotationDegrees))
             }
             .buttonStyle(.plain)
+            .expandedTapTarget(horizontal: 3, vertical: 11)
             .disabled(!isExposureAdjusted)
         }
         .padding(.horizontal, videoQuickAdjustmentHorizontalPadding)
@@ -1078,15 +1108,15 @@ private struct CameraScreen: View {
                     .foregroundStyle(AppTheme.textSecondary)
             }
 
-            Slider(
+            SteppedHapticSlider(
                 value: Binding(
                     get: { cameraManager.whiteBalanceTemperature },
                     set: { cameraManager.setWhiteBalanceTemperature($0) }
                 ),
-                in: cameraManager.whiteBalanceTemperatureRange,
-                step: 10
+                range: cameraManager.whiteBalanceTemperatureRange,
+                step: 100,
+                tint: AppTheme.accent
             )
-            .tint(AppTheme.accent)
 
             HStack {
                 Text("2500K")
@@ -1100,12 +1130,13 @@ private struct CameraScreen: View {
                 } label: {
                     Text("Auto")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(cameraManager.usesManualWhiteBalance ? AppTheme.textPrimary : Color.black)
+                        .foregroundStyle(AppTheme.textPrimary)
                         .padding(.horizontal, 10)
                         .frame(minWidth: 40, minHeight: 24)
                         .metalCapsulePanel(isActive: !cameraManager.usesManualWhiteBalance)
                 }
                 .buttonStyle(.plain)
+                .expandedTapTarget(horizontal: 3, vertical: 10)
 
                 Spacer()
 
@@ -1151,7 +1182,7 @@ private struct CameraScreen: View {
                     set: { cameraManager.setWhiteBalanceTemperature($0) }
                 ),
                 range: cameraManager.whiteBalanceTemperatureRange,
-                step: 10
+                step: 100
             )
             .tint(AppTheme.accent)
             .frame(width: 236)
@@ -1163,7 +1194,7 @@ private struct CameraScreen: View {
             } label: {
                 Text("Auto")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(cameraManager.usesManualWhiteBalance ? AppTheme.textPrimary : Color.black)
+                    .foregroundStyle(AppTheme.textPrimary)
                     .padding(.horizontal, 10)
                     .frame(minWidth: 56, minHeight: 24)
                     .lineLimit(1)
@@ -1172,6 +1203,7 @@ private struct CameraScreen: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.plain)
+            .expandedTapTarget(horizontal: 3, vertical: 10)
             .frame(
                 width: isLandscapePreviewOrientation ? 24 : nil,
                 height: isLandscapePreviewOrientation ? 70 : nil
@@ -1221,13 +1253,14 @@ private struct CameraScreen: View {
             } label: {
                 Text("A")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(isFocusAdjusted ? Color.black : AppTheme.textSecondary)
+                    .foregroundStyle(isFocusAdjusted ? AppTheme.textPrimary : AppTheme.textSecondary)
                     .padding(.horizontal, 8)
                     .frame(height: 22)
                     .metalCapsulePanel(isActive: isFocusAdjusted)
                     .rotationEffect(.degrees(previewControlRotationDegrees))
             }
             .buttonStyle(.plain)
+            .expandedTapTarget(horizontal: 3, vertical: 11)
             .disabled(!isFocusAdjusted)
         }
         .padding(.horizontal, videoQuickAdjustmentHorizontalPadding)
@@ -1251,7 +1284,7 @@ private struct CameraScreen: View {
                 } label: {
                     Text(cameraManager.lensPickerTitle(for: lens))
                         .font(.system(size: 13, weight: .black, design: .monospaced))
-                        .foregroundStyle(cameraManager.activeLensSelectorID == lens.selectorID ? Color.black : AppTheme.textPrimary)
+                        .foregroundStyle(AppTheme.textPrimary)
                         .frame(width: 34, height: 34)
                         .background(
                             Circle()
@@ -1264,6 +1297,7 @@ private struct CameraScreen: View {
                         .rotationEffect(.degrees(previewControlRotationDegrees))
                 }
                 .buttonStyle(.plain)
+                .expandedTapTarget(horizontal: 3, vertical: 5)
                 .disabled(cameraManager.isCaptureBusy)
             }
         }
@@ -1271,6 +1305,9 @@ private struct CameraScreen: View {
 
     private var recordButton: some View {
         Button {
+            if cameraManager.captureMode == .photo {
+                playPhotoShutterAnimation()
+            }
             cameraManager.triggerPrimaryCapture()
         } label: {
             ZStack {
@@ -1289,8 +1326,9 @@ private struct CameraScreen: View {
                         .frame(width: 72, height: 72)
                         .overlay(
                             Circle()
-                                .stroke(Color.white.opacity(0.88), lineWidth: 2.4)
+                                .stroke(AppTheme.accent.opacity(0.92), lineWidth: 2.4)
                         )
+                        .shadow(color: AppTheme.accent.opacity(0.20), radius: 9)
                         .overlay(
                             Circle()
                                 .stroke(Color.black.opacity(0.38), lineWidth: 1)
@@ -1302,9 +1340,9 @@ private struct CameraScreen: View {
                                 .padding(8)
                         )
 
-                    PhotoShutterCore(isClosed: cameraManager.isPhotoCaptureInProgress)
+                    PhotoShutterCore(isClosed: isPhotoShutterAnimating)
                         .frame(width: 48, height: 48)
-                        .scaleEffect(cameraManager.isPhotoCaptureInProgress ? 0.94 : 1)
+                        .scaleEffect(isPhotoShutterAnimating ? 0.94 : 1)
                 } else {
                     Circle()
                         .strokeBorder(Color.white.opacity(0.94), lineWidth: 4)
@@ -1339,6 +1377,18 @@ private struct CameraScreen: View {
         }
         .buttonStyle(.plain)
         .disabled(!cameraManager.canTriggerCapture)
+    }
+
+    private func playPhotoShutterAnimation() {
+        withAnimation(.easeIn(duration: 0.045)) {
+            isPhotoShutterAnimating = true
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.075) {
+            withAnimation(.easeOut(duration: 0.085)) {
+                isPhotoShutterAnimating = false
+            }
+        }
     }
 
     private var captureModeSwitchButton: some View {
@@ -1664,12 +1714,13 @@ private struct CameraScreen: View {
         } label: {
             Text("Auto")
                 .font(.system(size: 8, weight: .bold, design: .monospaced))
-                .foregroundStyle(cameraManager.usesManualWhiteBalance ? AppTheme.textPrimary : Color.black)
+                .foregroundStyle(AppTheme.textPrimary)
                 .padding(.horizontal, 5)
                 .frame(minWidth: 24, minHeight: 16)
                 .metalCapsulePanel(isActive: !cameraManager.usesManualWhiteBalance)
         }
         .buttonStyle(.plain)
+        .expandedTapTarget(horizontal: 4, vertical: 14)
         .fixedSize()
     }
 
@@ -1679,13 +1730,13 @@ private struct CameraScreen: View {
         } label: {
             Text("AF")
                 .font(.system(size: 8, weight: .bold, design: .monospaced))
-                .foregroundStyle(cameraManager.manualFocusEnabled ? AppTheme.textPrimary : Color.black)
+                .foregroundStyle(AppTheme.textPrimary)
                 .padding(.horizontal, 5)
                 .frame(minWidth: 20, minHeight: 16)
                 .metalCapsulePanel(isActive: !cameraManager.manualFocusEnabled)
         }
         .buttonStyle(.plain)
-        .contentShape(Capsule())
+        .expandedTapTarget(horizontal: 4, vertical: 14)
     }
 
     private var focusValueLabel: String {
@@ -1746,7 +1797,7 @@ private struct CameraScreen: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 12, weight: .black, design: .monospaced))
-                .foregroundStyle(isActive ? Color.black : AppTheme.textPrimary)
+                .foregroundStyle(AppTheme.textPrimary)
                 .frame(width: 48, height: 48)
                 .metalCirclePanel(isActive: isActive)
         }
@@ -1764,11 +1815,12 @@ private struct CameraScreen: View {
             Text("EV")
                 .font(.system(size: 11, weight: .black, design: .monospaced))
                 .tracking(0.4)
-                .foregroundStyle(photoExposureBiasButtonIsActive ? Color.black : AppTheme.textPrimary)
+                .foregroundStyle(AppTheme.textPrimary)
                 .frame(width: 44, height: 28)
                 .metalCapsulePanel(isActive: photoExposureBiasButtonIsActive)
         }
         .buttonStyle(.plain)
+        .expandedTapTarget(horizontal: 3, vertical: 8)
         .disabled(!cameraManager.supportsExposureBiasAdjustment)
         .opacity(cameraManager.supportsExposureBiasAdjustment ? 1 : 0.45)
         .rotationEffect(.degrees(previewControlRotationDegrees))
@@ -1784,12 +1836,13 @@ private struct CameraScreen: View {
         } label: {
             Text("0.0")
                 .font(.system(size: 8, weight: .bold, design: .monospaced))
-                .foregroundStyle(isExposureAdjusted ? Color.black : AppTheme.textSecondary)
+                .foregroundStyle(isExposureAdjusted ? AppTheme.textPrimary : AppTheme.textSecondary)
                 .padding(.horizontal, 5)
                 .frame(minWidth: 18, minHeight: 16)
                 .metalCapsulePanel(isActive: isExposureAdjusted)
         }
         .buttonStyle(.plain)
+        .expandedTapTarget(horizontal: 4, vertical: 14)
         .disabled(!isExposureAdjusted)
     }
 
@@ -1799,11 +1852,11 @@ private struct CameraScreen: View {
         } label: {
             ZStack {
                 Circle()
-                    .stroke(Color.black, lineWidth: 1.7)
+                    .stroke(AppTheme.textPrimary, lineWidth: 1.7)
                     .frame(width: 14, height: 14)
 
                 Capsule()
-                    .fill(Color.black)
+                    .fill(AppTheme.textPrimary)
                     .frame(width: 16, height: 1.9)
                     .rotationEffect(.degrees(-45))
             }
@@ -1811,6 +1864,7 @@ private struct CameraScreen: View {
             .metalCirclePanel(isActive: true)
         }
         .buttonStyle(.plain)
+        .expandedTapTarget(horizontal: 4, vertical: 7)
         .rotationEffect(.degrees(previewControlRotationDegrees))
     }
 
@@ -1819,12 +1873,13 @@ private struct CameraScreen: View {
             Text(title)
                 .font(.system(size: 11, weight: .black, design: .monospaced))
                 .tracking(0.4)
-                .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
+                .foregroundStyle(AppTheme.textPrimary)
                 .padding(.horizontal, 10)
                 .frame(height: 28)
                 .metalCapsulePanel(isActive: isSelected)
         }
         .buttonStyle(.plain)
+        .expandedTapTarget(horizontal: 3, vertical: 8)
     }
 
     private func compactMenuChip(title: String) -> some View {
@@ -1845,12 +1900,13 @@ private struct CameraScreen: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
+                .foregroundStyle(AppTheme.textPrimary)
                 .padding(.horizontal, 10)
                 .frame(height: 28)
                 .metalCapsulePanel(isActive: isSelected)
         }
         .buttonStyle(.plain)
+        .expandedTapTarget(horizontal: 3, vertical: 8)
     }
 
     private func compactReadOnlyChip(title: String) -> some View {
@@ -1871,12 +1927,13 @@ private struct CameraScreen: View {
                     .font(.system(size: 11, weight: .black, design: .monospaced))
                     .tracking(0.4)
             }
-            .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
+            .foregroundStyle(AppTheme.textPrimary)
             .padding(.horizontal, 10)
             .frame(height: 30)
             .metalCapsulePanel(isActive: isSelected)
         }
         .buttonStyle(.plain)
+        .expandedTapTarget(horizontal: 3, vertical: 7)
     }
 }
 
@@ -1916,9 +1973,9 @@ private struct CameraSettingsView: View {
     private var settingsBackground: some View {
         LinearGradient(
             colors: [
-                Color(red: 0.05, green: 0.05, blue: 0.055),
+                Color(red: 0.11, green: 0.035, blue: 0.045),
                 Color.black,
-                Color(red: 0.08, green: 0.08, blue: 0.09)
+                Color(red: 0.075, green: 0.05, blue: 0.06)
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -1951,7 +2008,7 @@ private struct CameraSettingsView: View {
         .background(.black.opacity(0.84))
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Color.white.opacity(0.08))
+                .fill(AppTheme.accent.opacity(0.28))
                 .frame(height: 1)
         }
     }
@@ -2110,7 +2167,7 @@ private struct CameraSettingsView: View {
     private var videoSection: some View {
         collapsiblePanel(
             title: "Video",
-            subtitle: "\(cameraManager.selectedFrameRate) fps - \(cameraManager.selectedVideoCodec.title)",
+            subtitle: "\(cameraManager.selectedVideoResolution.title) - \(cameraManager.selectedFrameRate) fps - \(cameraManager.selectedVideoCodec.title)",
             icon: "video.fill",
             isExpanded: $isVideoExpanded
         ) {
@@ -2135,6 +2192,21 @@ private struct CameraSettingsView: View {
 
             zebraRows(for: .video)
             focusPeakingRows(for: .video)
+
+            settingsRow(title: "Resolution") {
+                optionStrip {
+                    ForEach(VideoResolution.allCases) { resolution in
+                        selectionButton(
+                            title: resolution.title,
+                            isSelected: cameraManager.selectedVideoResolution == resolution
+                        ) {
+                            cameraManager.selectVideoResolution(resolution)
+                        }
+                        .disabled(cameraManager.isRecording)
+                        .opacity(cameraManager.isRecording ? 0.45 : 1)
+                    }
+                }
+            }
 
             settingsRow(title: "Frame Rate") {
                 optionStrip {
@@ -2408,7 +2480,7 @@ private struct CameraSettingsView: View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(Color.black)
+                .foregroundStyle(AppTheme.textPrimary)
                 .frame(width: 32, height: 32)
                 .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
 
@@ -2482,8 +2554,13 @@ private struct CameraSettingsView: View {
                            range: ClosedRange<Double>,
                            tint: Color) -> some View {
         settingsRow(title: title, detail: valueText) {
-            Slider(value: value, in: range, step: 1)
-                .tint(tint)
+            SteppedHapticSlider(
+                value: value,
+                range: range,
+                step: 1,
+                hapticStride: 5,
+                tint: tint
+            )
                 .frame(minWidth: 156)
         }
     }
@@ -2507,7 +2584,7 @@ private struct CameraSettingsView: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundStyle(isSelected ? Color.black : AppTheme.textPrimary)
+                .foregroundStyle(AppTheme.textPrimary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
                 .padding(.horizontal, 12)
@@ -2516,6 +2593,7 @@ private struct CameraSettingsView: View {
                 .metalRoundedPanel(cornerRadius: 9, isActive: isSelected)
         }
         .buttonStyle(.plain)
+        .expandedTapTarget(horizontal: 2, vertical: 5)
     }
 
     private func actionChip(title: String, action: @escaping () -> Void) -> some View {
@@ -2536,6 +2614,7 @@ private struct CameraSettingsView: View {
             .metalRoundedPanel(cornerRadius: 9)
         }
         .buttonStyle(.plain)
+        .expandedTapTarget(horizontal: 2, vertical: 5)
     }
 }
 
@@ -2626,7 +2705,7 @@ private struct RawlightOnboardingView: View {
         HStack(spacing: 12) {
             Image(systemName: "camera.aperture")
                 .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(Color.black)
+                .foregroundStyle(AppTheme.textPrimary)
                 .frame(width: 38, height: 38)
                 .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
@@ -2754,7 +2833,7 @@ private struct RawlightOnboardingView: View {
         HStack(alignment: .top, spacing: 13) {
             Image(systemName: icon)
                 .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(Color.black)
+                .foregroundStyle(AppTheme.textPrimary)
                 .frame(width: 36, height: 36)
                 .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 
@@ -2791,7 +2870,7 @@ private struct RawlightOnboardingView: View {
                 HStack(spacing: 9) {
                     if isRequestingPermission {
                         ProgressView()
-                            .tint(.black)
+                            .tint(AppTheme.textPrimary)
                     }
                     Text(primaryButtonTitle)
                         .font(.system(size: 13, weight: .black, design: .monospaced))
@@ -2801,7 +2880,7 @@ private struct RawlightOnboardingView: View {
                             .font(.system(size: 13, weight: .black))
                     }
                 }
-                .foregroundStyle(Color.black)
+                .foregroundStyle(AppTheme.textPrimary)
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)
                 .background(AppTheme.activeGradient, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -3029,13 +3108,107 @@ private struct PermissionView: View {
     }
 }
 
+private struct SteppedHapticSlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    var hapticStride: Double? = nil
+    let tint: Color
+
+    @State private var lastHapticIndex: Int?
+    @State private var feedbackGenerator = UIImpactFeedbackGenerator(style: .rigid)
+
+    var body: some View {
+        ZStack {
+            SliderStepTicks(intervalCount: hapticIntervalCount)
+                .padding(.horizontal, 12)
+
+            Slider(
+                value: Binding(
+                    get: { value },
+                    set: handleSliderValueChange
+                ),
+                in: range,
+                step: step,
+                onEditingChanged: handleEditingChanged
+            )
+            .tint(tint)
+            .scaleEffect(x: 1, y: 1.08)
+        }
+        .expandedTapTarget(horizontal: 0, vertical: 10)
+    }
+
+    private var hapticIndex: Int {
+        let increment = max(hapticStride ?? step, .ulpOfOne)
+        return Int(((value - range.lowerBound) / increment).rounded())
+    }
+
+    private var hapticIntervalCount: Int {
+        let increment = max(hapticStride ?? step, .ulpOfOne)
+        return max(Int(((range.upperBound - range.lowerBound) / increment).rounded()), 1)
+    }
+
+    private func handleEditingChanged(_ editing: Bool) {
+        if editing {
+            lastHapticIndex = hapticIndex
+            feedbackGenerator.prepare()
+        } else {
+            lastHapticIndex = nil
+        }
+    }
+
+    private func handleSliderValueChange(_ newValue: Double) {
+        let increment = max(hapticStride ?? step, .ulpOfOne)
+        let newIndex = Int(((newValue - range.lowerBound) / increment).rounded())
+        let previousIndex = lastHapticIndex ?? hapticIndex
+
+        if previousIndex != newIndex {
+            feedbackGenerator.impactOccurred(intensity: 1.0)
+            feedbackGenerator.prepare()
+        }
+
+        lastHapticIndex = newIndex
+        value = newValue
+    }
+}
+
+private struct SliderStepTicks: View {
+    let intervalCount: Int
+
+    var body: some View {
+        Canvas { context, size in
+            let count = max(intervalCount, 1)
+
+            for index in 0...count {
+                let progress = CGFloat(index) / CGFloat(count)
+                let x = progress * size.width
+                let isEndpoint = index == 0 || index == count
+                let isMajor = isEndpoint || index % 5 == 0
+                let height: CGFloat = isMajor ? 12 : 6
+                var tick = Path()
+                tick.move(to: CGPoint(x: x, y: (size.height - height) / 2))
+                tick.addLine(to: CGPoint(x: x, y: (size.height + height) / 2))
+                context.stroke(
+                    tick,
+                    with: .color(Color.white.opacity(isMajor ? 0.42 : 0.22)),
+                    lineWidth: 1
+                )
+            }
+        }
+        .frame(height: 14)
+        .allowsHitTesting(false)
+    }
+}
+
 private struct DiscreteLandscapeSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let step: Double
 
-    private let trackHeight: CGFloat = 4
-    private let thumbSize: CGFloat = 22
+    private let trackHeight: CGFloat = 5
+    private let thumbSize: CGFloat = 26
+    @State private var lastHapticIndex: Int?
+    @State private var feedbackGenerator = UIImpactFeedbackGenerator(style: .rigid)
 
     var body: some View {
         GeometryReader { proxy in
@@ -3044,6 +3217,9 @@ private struct DiscreteLandscapeSlider: View {
             let xPosition = (thumbSize / 2) + progress * max(width - thumbSize, 1)
 
             ZStack(alignment: .leading) {
+                SliderStepTicks(intervalCount: stepIntervalCount)
+                    .padding(.horizontal, thumbSize / 2)
+
                 Capsule()
                     .fill(Color.white.opacity(0.32))
                     .frame(height: trackHeight)
@@ -3057,15 +3233,34 @@ private struct DiscreteLandscapeSlider: View {
                     )
                     .position(x: xPosition, y: proxy.size.height / 2)
             }
-            .contentShape(Rectangle())
+            .contentShape(
+                .interaction,
+                ExpandedHitRectangle(horizontalExpansion: 0, verticalExpansion: 10)
+            )
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
                         updateValue(for: gesture.location.x, width: width)
                     }
+                    .onEnded { _ in
+                        lastHapticIndex = nil
+                    }
             )
         }
         .frame(height: 24)
+        .accessibilityElement()
+        .accessibilityLabel("Adjustment")
+        .accessibilityValue(accessibilityValue)
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment:
+                setValue(value + step, providesFeedback: true)
+            case .decrement:
+                setValue(value - step, providesFeedback: true)
+            @unknown default:
+                break
+            }
+        }
     }
 
     private var normalizedProgress: CGFloat {
@@ -3076,13 +3271,39 @@ private struct DiscreteLandscapeSlider: View {
         return CGFloat((clamped - lower) / (upper - lower))
     }
 
+    private var stepIntervalCount: Int {
+        max(Int(((range.upperBound - range.lowerBound) / max(step, .ulpOfOne)).rounded()), 1)
+    }
+
     private func updateValue(for locationX: CGFloat, width: CGFloat) {
         let usableWidth = max(width - thumbSize, 1)
         let clampedX = min(max(locationX, thumbSize / 2), width - thumbSize / 2)
         let progress = (clampedX - thumbSize / 2) / usableWidth
         let rawValue = range.lowerBound + Double(progress) * (range.upperBound - range.lowerBound)
-        let steppedValue = (rawValue / step).rounded() * step
-        value = min(max(steppedValue, range.lowerBound), range.upperBound)
+        let steppedValue = range.lowerBound + ((rawValue - range.lowerBound) / step).rounded() * step
+        setValue(steppedValue, providesFeedback: true)
+    }
+
+    private var accessibilityValue: String {
+        step < 1 ? String(format: "%.2f", value) : String(format: "%.0f", value)
+    }
+
+    private func setValue(_ newValue: Double, providesFeedback: Bool) {
+        let clampedValue = min(max(newValue, range.lowerBound), range.upperBound)
+        let newIndex = Int(((clampedValue - range.lowerBound) / max(step, .ulpOfOne)).rounded())
+
+        if lastHapticIndex == nil {
+            lastHapticIndex = Int(((value - range.lowerBound) / max(step, .ulpOfOne)).rounded())
+            feedbackGenerator.prepare()
+        }
+
+        if providesFeedback, lastHapticIndex != newIndex {
+            feedbackGenerator.impactOccurred(intensity: 1.0)
+            feedbackGenerator.prepare()
+        }
+
+        lastHapticIndex = newIndex
+        value = clampedValue
     }
 }
 
@@ -3152,7 +3373,7 @@ private struct PhotoShutterCore: View {
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .scaleEffect(isClosed ? 0.94 : 1)
-        .animation(.easeInOut(duration: 0.16), value: isClosed)
+        .animation(.easeInOut(duration: 0.065), value: isClosed)
     }
 }
 

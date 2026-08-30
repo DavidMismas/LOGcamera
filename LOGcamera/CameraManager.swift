@@ -218,6 +218,31 @@ enum VideoRecordingCodec: String, CaseIterable, Identifiable {
     }
 }
 
+enum VideoResolution: String, CaseIterable, Identifiable {
+    case uhd4K
+    case fullHD
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .uhd4K:
+            return "4K"
+        case .fullHD:
+            return "1080p"
+        }
+    }
+
+    var dimensions: CMVideoDimensions {
+        switch self {
+        case .uhd4K:
+            return CMVideoDimensions(width: 3840, height: 2160)
+        case .fullHD:
+            return CMVideoDimensions(width: 1920, height: 1080)
+        }
+    }
+}
+
 enum PhotoCompanionFormat: String, CaseIterable, Identifiable {
     case dngOnly
     case dngPlusHEIC
@@ -374,6 +399,7 @@ final class CameraManager: NSObject, ObservableObject {
         static let captureMode = "camera.captureMode"
         static let defaultCaptureMode = "camera.defaultCaptureMode"
         static let selectedFrameRate = "camera.selectedFrameRate"
+        static let selectedVideoResolution = "camera.selectedVideoResolution"
         static let whiteBalanceLockedDuringRecording = "camera.whiteBalanceLockedDuringRecording"
         static let exposureLockedDuringRecording = "camera.exposureLockedDuringRecording"
         static let selectedStabilizationMode = "camera.selectedStabilizationMode"
@@ -481,6 +507,9 @@ final class CameraManager: NSObject, ObservableObject {
     }
     @Published var selectedFrameRate = 30 {
         didSet { UserDefaults.standard.set(selectedFrameRate, forKey: SettingsKey.selectedFrameRate) }
+    }
+    @Published var selectedVideoResolution: VideoResolution = .uhd4K {
+        didSet { UserDefaults.standard.set(selectedVideoResolution.rawValue, forKey: SettingsKey.selectedVideoResolution) }
     }
     @Published var whiteBalanceLockedDuringRecording = true {
         didSet { UserDefaults.standard.set(whiteBalanceLockedDuringRecording, forKey: SettingsKey.whiteBalanceLockedDuringRecording) }
@@ -758,7 +787,7 @@ final class CameraManager: NSObject, ObservableObject {
     var captureSummaryText: String {
         switch captureMode {
         case .video:
-            return "4K • \(selectedFrameRate) fps • \(selectedVideoCodec.title) • \(colorProfile.title)"
+            return "\(selectedVideoResolution.title) • \(selectedFrameRate) fps • \(selectedVideoCodec.title) • \(colorProfile.title)"
         case .photo:
             return canCapturePhoto ? "\(photoRAWFormat.title) DNG" : "\(photoRAWFormat.title) Unavailable"
         }
@@ -871,7 +900,6 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private let required4KResolution = CMVideoDimensions(width: 3840, height: 2160)
     private let sessionQueue = DispatchQueue(label: "com.logcamera.sessionQueue")
     private let feedbackDuration: TimeInterval = 2.0
     private let focusLockDelay: TimeInterval = 0.2
@@ -900,6 +928,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var lastAutoControlReadbackTimestamp: TimeInterval = 0
     private var recordingTimer: Timer?
     private let writerQueue = DispatchQueue(label: "com.logcamera.writerQueue")
+    private let photoSaveQueue = DispatchQueue(label: "com.logcamera.photoSaveQueue", qos: .utility)
     private let previewQueue = DispatchQueue(label: "com.logcamera.previewQueue", qos: .userInteractive)
     private var assetWriter: AVAssetWriter?
     private var videoWriterInput: AVAssetWriterInput?
@@ -957,6 +986,18 @@ final class CameraManager: NSObject, ObservableObject {
             UserDefaults.standard.set(recordingBitrateMbps, forKey: SettingsKey.recordingBitrateMbps)
         }
         reconfigureActiveLens()
+    }
+
+    func selectVideoResolution(_ resolution: VideoResolution) {
+        guard !isRecording else {
+            presentStatusMessage("Stop recording before changing resolution.")
+            return
+        }
+        guard selectedVideoResolution != resolution else { return }
+        selectedVideoResolution = resolution
+        if isSessionConfigured, captureMode == .video {
+            reconfigureActiveLens()
+        }
     }
 
     func selectStabilizationMode(_ mode: CaptureStabilizationMode) {
@@ -1896,7 +1937,7 @@ final class CameraManager: NSObject, ObservableObject {
         guard captureMode == .video else { return }
         guard !isRecording else { return }
         guard canRecord else {
-            presentStatusMessage("Current lens or FPS does not support 4K video capture with the current settings.")
+            presentStatusMessage("Current lens or FPS does not support \(selectedVideoResolution.title) video capture with the current settings.")
             return
         }
 
@@ -2326,6 +2367,7 @@ final class CameraManager: NSObject, ObservableObject {
             self.session.commitConfiguration()
             self.isSessionConfigured = true
             self.session.startRunning()
+            self.enableHapticsDuringAudioCapture()
             self.configureOutput()
             if self.captureMode == .photo {
                 self.refreshPhotoCaptureAvailability()
@@ -3053,10 +3095,11 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func selectBestFormat(for device: AVCaptureDevice, targetFrameRate: Int) throws -> FormatSelection {
+        let requiredResolution = selectedVideoResolution.dimensions
         let matchingFormats = device.formats.compactMap { format -> FormatSelection? in
             let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            guard dimensions.width == required4KResolution.width,
-                  dimensions.height == required4KResolution.height else {
+            guard dimensions.width == requiredResolution.width,
+                  dimensions.height == requiredResolution.height else {
                 return nil
             }
 
@@ -3096,7 +3139,7 @@ final class CameraManager: NSObject, ObservableObject {
             return lhs.profile.priority > rhs.profile.priority
         }).first else {
             throw CameraConfigurationError(
-                message: "Selected lens does not support 4K \(targetFrameRate) fps in Apple Log."
+                message: "Selected lens does not support \(selectedVideoResolution.title) \(targetFrameRate) fps in Apple Log."
             )
         }
 
@@ -3806,6 +3849,11 @@ final class CameraManager: NSObject, ObservableObject {
 
         captureMode = defaultCaptureMode
 
+        if let rawResolution = defaults.string(forKey: SettingsKey.selectedVideoResolution),
+           let resolution = VideoResolution(rawValue: rawResolution) {
+            selectedVideoResolution = resolution
+        }
+
         if let savedFrameRate = defaults.object(forKey: SettingsKey.selectedFrameRate) as? Int,
            Self.supportedFrameRates.contains(savedFrameRate) {
             selectedFrameRate = savedFrameRate
@@ -4253,8 +4301,17 @@ final class CameraManager: NSObject, ObservableObject {
         sessionQueue.async {
             guard self.isSessionConfigured, !self.session.isRunning else { return }
             self.session.startRunning()
+            self.enableHapticsDuringAudioCapture()
             self.configureOutput()
             self.updateProExposureAutomationState()
+        }
+    }
+
+    private func enableHapticsDuringAudioCapture() {
+        do {
+            try AVAudioSession.sharedInstance().setAllowHapticsAndSystemSoundsDuringRecording(true)
+        } catch {
+            print("Unable to enable haptics during audio capture: \(error.localizedDescription)")
         }
     }
 
@@ -4423,65 +4480,71 @@ extension CameraManager {
                 return
             }
 
-            let rawURL = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension("dng")
+            self.photoSaveQueue.async {
+                self.prepareAndSaveCapturedPhoto(captureResult)
+            }
+        }
+    }
 
-            var processedURL: URL?
+    private func prepareAndSaveCapturedPhoto(_ captureResult: CapturedPhotoResult) {
+        let rawURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("dng")
 
-            do {
-                try captureResult.rawData.write(to: rawURL, options: .atomic)
+        var processedURL: URL?
 
-                if let processedData = captureResult.processedData,
-                   let processedFileType = captureResult.processedFileType {
-                    let fileExtension = processedFileType == .heic ? "heic" : "jpg"
-                    let url = URL(fileURLWithPath: NSTemporaryDirectory())
-                        .appendingPathComponent(UUID().uuidString)
-                        .appendingPathExtension(fileExtension)
-                    try processedData.write(to: url, options: .atomic)
-                    processedURL = url
+        do {
+            try captureResult.rawData.write(to: rawURL, options: .atomic)
+
+            if let processedData = captureResult.processedData,
+               let processedFileType = captureResult.processedFileType {
+                let fileExtension = processedFileType == .heic ? "heic" : "jpg"
+                let url = URL(fileURLWithPath: NSTemporaryDirectory())
+                    .appendingPathComponent(UUID().uuidString)
+                    .appendingPathExtension(fileExtension)
+                try processedData.write(to: url, options: .atomic)
+                processedURL = url
+            }
+        } catch {
+            self.presentStatusMessage("Could not prepare RAW photo for saving.")
+            return
+        }
+
+        PHPhotoLibrary.shared().performChanges({
+            let rawRequest = PHAssetCreationRequest.forAsset()
+            let rawOptions = PHAssetResourceCreationOptions()
+            rawOptions.shouldMoveFile = true
+            rawRequest.addResource(with: .photo, fileURL: rawURL, options: rawOptions)
+
+            if let processedURL {
+                let processedRequest = PHAssetCreationRequest.forAsset()
+                let processedOptions = PHAssetResourceCreationOptions()
+                processedOptions.shouldMoveFile = true
+                processedRequest.addResource(with: .photo, fileURL: processedURL, options: processedOptions)
+            }
+        }, completionHandler: { success, error in
+            if !success {
+                try? FileManager.default.removeItem(at: rawURL)
+                if let processedURL {
+                    try? FileManager.default.removeItem(at: processedURL)
                 }
-            } catch {
-                self.presentStatusMessage("Could not prepare RAW photo for saving.")
+            }
+
+            if let error {
+                self.presentStatusMessage("Could not save RAW photo: \(error.localizedDescription)")
                 return
             }
 
-            PHPhotoLibrary.shared().performChanges({
-                let rawRequest = PHAssetCreationRequest.forAsset()
-                let rawOptions = PHAssetResourceCreationOptions()
-                rawOptions.shouldMoveFile = true
-                rawRequest.addResource(with: .photo, fileURL: rawURL, options: rawOptions)
-
-                if let processedURL {
-                    let processedRequest = PHAssetCreationRequest.forAsset()
-                    let processedOptions = PHAssetResourceCreationOptions()
-                    processedOptions.shouldMoveFile = true
-                    processedRequest.addResource(with: .photo, fileURL: processedURL, options: processedOptions)
+            if success {
+                if captureResult.processedData != nil,
+                   let processedFileType = captureResult.processedFileType {
+                    let companionTitle = processedFileType == .heic ? "HEIC" : "JPEG"
+                    self.presentStatusMessage("DNG and \(companionTitle) saved to Photos.")
+                } else {
+                    self.presentStatusMessage("RAW photo saved to Photos.")
                 }
-            }, completionHandler: { success, error in
-                if !success {
-                    try? FileManager.default.removeItem(at: rawURL)
-                    if let processedURL {
-                        try? FileManager.default.removeItem(at: processedURL)
-                    }
-                }
-
-                if let error {
-                    self.presentStatusMessage("Could not save RAW photo: \(error.localizedDescription)")
-                    return
-                }
-
-                if success {
-                    if captureResult.processedData != nil,
-                       let processedFileType = captureResult.processedFileType {
-                        let companionTitle = processedFileType == .heic ? "HEIC" : "JPEG"
-                        self.presentStatusMessage("DNG and \(companionTitle) saved to Photos.")
-                    } else {
-                        self.presentStatusMessage("RAW photo saved to Photos.")
-                    }
-                }
-            })
-        }
+            }
+        })
     }
 }
 
