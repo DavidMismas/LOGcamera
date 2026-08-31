@@ -2356,7 +2356,7 @@ private struct CameraSettingsView: View {
                     set: { cameraManager.setFocusPeakingSensitivityPercent(Int($0.rounded()), for: mode) }
                 ),
                 range: 20...100,
-                tint: Color(red: 0.26, green: 0.92, blue: 0.42)
+                tint: AppTheme.accent
             )
         }
     }
