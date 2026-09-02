@@ -943,6 +943,7 @@ final class CameraManager: NSObject, ObservableObject {
         super.init()
         restorePersistedSettings()
         purgeTemporaryCaptureFiles()
+        enableHapticsDuringAudioCapture()
         refreshMicrophoneModeStatus()
         observeAudioRouteChanges()
         refreshPermissionStatuses(setupCameraIfAuthorized: true)
@@ -957,6 +958,7 @@ final class CameraManager: NSObject, ObservableObject {
     func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .active:
+            enableHapticsDuringAudioCapture()
             refreshPermissionStatuses(setupCameraIfAuthorized: true)
             refreshMicrophoneModeStatus()
             refreshAudioInputConfiguration()
@@ -1262,9 +1264,11 @@ final class CameraManager: NSObject, ObservableObject {
             let targetDevice = preferredLens.flatMap { self.deviceRegistry[$0.id] } ?? currentDevice
 
             var resolvedMode = previousMode
+            self.enableHapticsDuringAudioCapture()
             self.session.beginConfiguration()
             defer {
                 self.session.commitConfiguration()
+                self.enableHapticsDuringAudioCapture()
                 self.configureOutput(mode: resolvedMode)
                 if resolvedMode == .photo {
                     self.refreshPhotoCaptureAvailability()
@@ -1933,6 +1937,7 @@ final class CameraManager: NSObject, ObservableObject {
 
         sessionQueue.async {
             guard !self.isRecording else { return }
+            self.enableHapticsDuringAudioCapture()
             self.videoDataOutput.alwaysDiscardsLateVideoFrames = true
             self.stopProExposureAutomation()
             self.prepareDeviceForRecording()
@@ -2314,6 +2319,7 @@ final class CameraManager: NSObject, ObservableObject {
             self.session.beginConfiguration()
             self.installAudioInputIfPossible()
             self.session.commitConfiguration()
+            self.enableHapticsDuringAudioCapture()
         }
     }
 
@@ -2325,6 +2331,7 @@ final class CameraManager: NSObject, ObservableObject {
         ) { [weak self] _ in
             self?.refreshMicrophoneModeStatus()
             self?.refreshAudioInputConfiguration()
+            self?.enableHapticsDuringAudioCapture()
         }
     }
 
@@ -2356,6 +2363,7 @@ final class CameraManager: NSObject, ObservableObject {
 
             self.session.commitConfiguration()
             self.isSessionConfigured = true
+            self.enableHapticsDuringAudioCapture()
             self.session.startRunning()
             self.enableHapticsDuringAudioCapture()
             self.configureOutput()
@@ -2778,6 +2786,7 @@ final class CameraManager: NSObject, ObservableObject {
             }
 
             self.configureAudioInput(audioInput)
+            self.enableHapticsDuringAudioCapture()
         }
     }
 
@@ -4290,6 +4299,7 @@ final class CameraManager: NSObject, ObservableObject {
     private func startSession() {
         sessionQueue.async {
             guard self.isSessionConfigured, !self.session.isRunning else { return }
+            self.enableHapticsDuringAudioCapture()
             self.session.startRunning()
             self.enableHapticsDuringAudioCapture()
             self.configureOutput()

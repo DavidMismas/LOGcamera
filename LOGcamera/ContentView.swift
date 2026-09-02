@@ -3147,58 +3147,10 @@ private struct CaptureModeTransitionOverlay: View {
         ZStack {
             Color.black.opacity(0.93)
 
-            RadialGradient(
-                colors: [
-                    AppTheme.accentStrong.opacity(0.68),
-                    AppTheme.accent.opacity(0.12),
-                    Color.clear
-                ],
-                center: .center,
-                startRadius: 8,
-                endRadius: 270
-            )
-
-            Circle()
-                .stroke(AppTheme.accent.opacity(0.18), lineWidth: 1)
-                .frame(width: 230, height: 230)
-                .scaleEffect(isActive ? 1.06 : 0.82)
-                .opacity(isActive ? 0.22 : 0)
-                .animation(.easeOut(duration: 0.55), value: isActive)
-
-            Circle()
-                .stroke(AppTheme.accent.opacity(0.38), lineWidth: 1.5)
-                .frame(width: 156, height: 156)
-                .scaleEffect(isActive ? 0.94 : 1.08)
-                .opacity(isActive ? 1 : 0)
-                .animation(.easeOut(duration: 0.42), value: isActive)
-
             VStack(spacing: 13) {
-                ZStack {
-                    Circle()
-                        .fill(AppTheme.surfaceGradient)
-                        .frame(width: 88, height: 88)
-                        .overlay(
-                            Circle()
-                                .stroke(AppTheme.accent.opacity(0.88), lineWidth: 2)
-                        )
-                        .shadow(color: AppTheme.accent.opacity(0.32), radius: 16)
-
-                    Image(systemName: targetMode == .photo ? "camera.fill" : "video.fill")
-                        .font(.system(size: 28, weight: .bold))
-                        .foregroundStyle(AppTheme.textPrimary)
-                }
-
-                VStack(spacing: 4) {
-                    Text(targetMode.title.uppercased())
-                        .font(.system(size: 15, weight: .black, design: .monospaced))
-                        .tracking(2.2)
-                        .foregroundStyle(AppTheme.textPrimary)
-
-                    Text("PREPARING MODE")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .tracking(1.2)
-                        .foregroundStyle(AppTheme.textSecondary)
-                }
+                Image(systemName: targetMode == .photo ? "camera.fill" : "video.fill")
+                    .font(.system(size: 34, weight: .bold))
+                    .foregroundStyle(AppTheme.textPrimary)
 
                 ProgressView()
                     .controlSize(.small)
