@@ -1273,7 +1273,18 @@ final class CameraManager: NSObject, ObservableObject {
                 if resolvedMode == .photo {
                     self.refreshPhotoCaptureAvailability()
                 }
-                self.finishCaptureModeSwitch(to: resolvedMode)
+                if resolvedMode == .video {
+                    // AVCaptureSession finishes updating its recording audio
+                    // session shortly after the configuration commit. Re-enable
+                    // haptics after that update, then uncover the video controls.
+                    let completedMode = resolvedMode
+                    self.sessionQueue.asyncAfter(deadline: .now() + 0.3) {
+                        self.enableHapticsDuringAudioCapture()
+                        self.finishCaptureModeSwitch(to: completedMode)
+                    }
+                } else {
+                    self.finishCaptureModeSwitch(to: resolvedMode)
+                }
             }
 
             self.session.sessionPreset = nextMode == .photo ? .photo : .inputPriority

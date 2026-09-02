@@ -3207,6 +3207,7 @@ private struct SteppedHapticSlider: View {
     private func handleEditingChanged(_ editing: Bool) {
         if editing {
             lastHapticIndex = hapticIndex
+            feedbackGenerator = UIImpactFeedbackGenerator(style: .rigid)
             feedbackGenerator.prepare()
         } else {
             lastHapticIndex = nil
@@ -3350,6 +3351,7 @@ private struct DiscreteLandscapeSlider: View {
 
         if lastHapticIndex == nil {
             lastHapticIndex = Int(((value - range.lowerBound) / max(step, .ulpOfOne)).rounded())
+            feedbackGenerator = UIImpactFeedbackGenerator(style: .rigid)
             feedbackGenerator.prepare()
         }
 
