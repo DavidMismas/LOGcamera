@@ -2132,6 +2132,25 @@ private struct CameraSettingsView: View {
                 }
             }
 
+            settingsRow(title: "Image Quality", detail: cameraManager.photoImageQuality.title) {
+                VStack(alignment: .leading, spacing: 7) {
+                    optionStrip {
+                        ForEach(PhotoImageQuality.allCases) { quality in
+                            selectionButton(
+                                title: quality.title,
+                                isSelected: cameraManager.photoImageQuality == quality
+                            ) {
+                                cameraManager.selectPhotoImageQuality(quality)
+                            }
+                        }
+                    }
+
+                    Text("Controls DNG, HEIC and JPEG compression where supported. Maximum preserves lossless RAW quality.")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+            }
+
             settingsRow(title: "Resolution") {
                 VStack(alignment: .leading, spacing: 7) {
                     optionStrip {

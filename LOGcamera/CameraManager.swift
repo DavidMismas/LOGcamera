@@ -316,6 +316,36 @@ enum PhotoResolutionOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum PhotoImageQuality: String, CaseIterable, Identifiable {
+    case compact
+    case balanced
+    case maximum
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .compact:
+            return "Compact"
+        case .balanced:
+            return "Balanced"
+        case .maximum:
+            return "Maximum"
+        }
+    }
+
+    var compressionQuality: Double {
+        switch self {
+        case .compact:
+            return 0.70
+        case .balanced:
+            return 0.85
+        case .maximum:
+            return 1.0
+        }
+    }
+}
+
 enum PhotoDefaultWideFocalLength: String, CaseIterable, Identifiable {
     case mm24 = "24"
     case mm28 = "28"
@@ -412,6 +442,7 @@ final class CameraManager: NSObject, ObservableObject {
         static let photoRAWFormat = "camera.photoRAWFormat"
         static let photoCompanionFormat = "camera.photoCompanionFormat"
         static let photoResolutionOption = "camera.photoResolutionOption"
+        static let photoImageQuality = "camera.photoImageQuality"
         static let photoDefaultWideFocalLength = "camera.photoDefaultWideFocalLength"
         static let previewLookMode = "camera.previewLookMode"
         static let zebraEnabled = "camera.zebraEnabled"
@@ -483,6 +514,9 @@ final class CameraManager: NSObject, ObservableObject {
     }
     @Published var photoResolutionOption: PhotoResolutionOption = .full {
         didSet { UserDefaults.standard.set(photoResolutionOption.rawValue, forKey: SettingsKey.photoResolutionOption) }
+    }
+    @Published var photoImageQuality: PhotoImageQuality = .maximum {
+        didSet { UserDefaults.standard.set(photoImageQuality.rawValue, forKey: SettingsKey.photoImageQuality) }
     }
     @Published var photoDefaultWideFocalLength: PhotoDefaultWideFocalLength = .mm24 {
         didSet { UserDefaults.standard.set(photoDefaultWideFocalLength.rawValue, forKey: SettingsKey.photoDefaultWideFocalLength) }
@@ -1035,6 +1069,10 @@ final class CameraManager: NSObject, ObservableObject {
         if isSessionConfigured {
             reconfigureActiveLens()
         }
+    }
+
+    func selectPhotoImageQuality(_ quality: PhotoImageQuality) {
+        photoImageQuality = quality
     }
 
     func selectPhotoDefaultWideFocalLength(_ focalLength: PhotoDefaultWideFocalLength) {
@@ -2023,7 +2061,10 @@ final class CameraManager: NSObject, ObservableObject {
                     }
 
                     let captureID = settings.uniqueID
-                    let processor = PhotoCaptureProcessor(processedFileType: settings.processedFileType) { [weak self] captureResult in
+                    let processor = PhotoCaptureProcessor(
+                        processedFileType: settings.processedFileType,
+                        compressionQuality: self.photoImageQuality.compressionQuality
+                    ) { [weak self] captureResult in
                         guard let self else { return }
                         self.sessionQueue.async {
                             self.activePhotoProcessors[captureID] = nil
@@ -2112,6 +2153,17 @@ final class CameraManager: NSObject, ObservableObject {
             settings.maxPhotoDimensions = preferredDimensions
         }
 
+        if #available(iOS 18.0, *),
+           let rawCodec = photoOutput.supportedRawPhotoCodecTypes(
+               forRawPhotoPixelFormatType: rawPixelType,
+               fileType: .dng
+           ).first {
+            settings.rawFileFormat = [
+                AVVideoCodecKey: rawCodec,
+                AVVideoQualityKey: photoImageQuality.compressionQuality
+            ]
+        }
+
         return settings
     }
 
@@ -2139,7 +2191,7 @@ final class CameraManager: NSObject, ObservableObject {
             format: [
                 AVVideoCodecKey: codecType,
                 AVVideoCompressionPropertiesKey: [
-                    AVVideoQualityKey: 1.0
+                    AVVideoQualityKey: photoImageQuality.compressionQuality
                 ]
             ],
             fileType: fileType
@@ -4025,6 +4077,11 @@ final class CameraManager: NSObject, ObservableObject {
             photoResolutionOption = photoRAWFormat == .bayerRAW ? .twelveMP : resolutionOption
         }
 
+        if let savedPhotoImageQuality = defaults.string(forKey: SettingsKey.photoImageQuality),
+           let imageQuality = PhotoImageQuality(rawValue: savedPhotoImageQuality) {
+            photoImageQuality = imageQuality
+        }
+
         if let savedPhotoDefaultWideFocalLength = defaults.string(forKey: SettingsKey.photoDefaultWideFocalLength),
            let focalLength = PhotoDefaultWideFocalLength(rawValue: savedPhotoDefaultWideFocalLength) {
             photoDefaultWideFocalLength = focalLength
@@ -4562,13 +4619,26 @@ extension CameraManager {
 private final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
     private let completion: (CapturedPhotoResult?) -> Void
     private let processedFileType: AVFileType?
+    private let compressionQuality: Double
     private let stateQueue = DispatchQueue(label: "com.logcamera.photoCaptureProcessor")
     private var rawPhotoData: Data?
     private var processedPhotoData: Data?
 
-    init(processedFileType: AVFileType?, completion: @escaping (CapturedPhotoResult?) -> Void) {
+    init(processedFileType: AVFileType?,
+         compressionQuality: Double,
+         completion: @escaping (CapturedPhotoResult?) -> Void) {
         self.processedFileType = processedFileType
+        self.compressionQuality = compressionQuality
         self.completion = completion
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput,
+                     replacementAppleProRAWCompressionSettingsFor photo: AVCapturePhoto,
+                     defaultSettings: [String: Any],
+                     maximumBitDepth: Int) -> [String: Any] {
+        var settings = defaultSettings
+        settings[AVVideoQualityKey] = compressionQuality
+        return settings
     }
 
     func photoOutput(_ output: AVCapturePhotoOutput,
