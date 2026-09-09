@@ -2,6 +2,7 @@ import SwiftUI
 import AVFoundation
 import Photos
 import UIKit
+import CoreHaptics
 
 private enum AppTheme {
     static let accent = Color(red: 0.78, green: 0.07, blue: 0.11)
@@ -3183,6 +3184,70 @@ private struct CaptureModeTransitionOverlay: View {
     }
 }
 
+// One engine survives SwiftUI view replacement. All engine work is serialized
+// off the UI thread; start() also recovers after idle shutdown or interruption.
+private final class SliderHaptics: @unchecked Sendable {
+    static let shared = SliderHaptics()
+    private let queue = DispatchQueue(label: "com.logcamera.sliderHaptics", qos: .userInteractive)
+    private var engine: CHHapticEngine?
+    private var player: CHHapticPatternPlayer?
+
+    func prepare() {
+        queue.async { self.performTick(play: false) }
+    }
+
+    func tick() {
+        let requestedAt = ProcessInfo.processInfo.systemUptime
+        queue.async {
+            // Don't replay a backlog of vibrations after a system interruption.
+            guard ProcessInfo.processInfo.systemUptime - requestedAt < 0.15 else { return }
+            self.performTick(play: true)
+        }
+    }
+
+    private func performTick(play: Bool) {
+        guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            if !audioSession.allowHapticsAndSystemSoundsDuringRecording {
+                try audioSession.setAllowHapticsAndSystemSoundsDuringRecording(true)
+            }
+            if engine == nil {
+                let newEngine = try CHHapticEngine()
+                newEngine.playsHapticsOnly = true
+                newEngine.isAutoShutdownEnabled = true
+                newEngine.resetHandler = { [weak self] in
+                    guard let self else { return }
+                    self.queue.async { self.player = nil }
+                }
+                newEngine.stoppedHandler = { reason in
+                    #if DEBUG
+                    print("Slider haptics stopped: \(reason.rawValue)")
+                    #endif
+                }
+                engine = newEngine
+            }
+            guard let engine else { return }
+            try engine.start()
+            if player == nil {
+                let event = CHHapticEvent(eventType: .hapticTransient, parameters: [
+                    CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.85),
+                    CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.8)
+                ], relativeTime: 0)
+                player = try engine.makePlayer(with: CHHapticPattern(events: [event], parameters: []))
+            }
+            if play { try player?.start(atTime: CHHapticTimeImmediate) }
+        } catch {
+            // A reset invalidates players. Recreate on the next interaction,
+            // without delaying the camera controls or replaying old ticks.
+            player = nil
+            #if DEBUG
+            print("Slider haptics failed: \(error)")
+            #endif
+        }
+    }
+}
+
 private struct SteppedHapticSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -3191,7 +3256,6 @@ private struct SteppedHapticSlider: View {
     let tint: Color
 
     @State private var lastHapticIndex: Int?
-    @State private var feedbackGenerator = UIImpactFeedbackGenerator(style: .rigid)
 
     var body: some View {
         ZStack {
@@ -3226,8 +3290,7 @@ private struct SteppedHapticSlider: View {
     private func handleEditingChanged(_ editing: Bool) {
         if editing {
             lastHapticIndex = hapticIndex
-            feedbackGenerator = UIImpactFeedbackGenerator(style: .rigid)
-            feedbackGenerator.prepare()
+            SliderHaptics.shared.prepare()
         } else {
             lastHapticIndex = nil
         }
@@ -3239,8 +3302,7 @@ private struct SteppedHapticSlider: View {
         let previousIndex = lastHapticIndex ?? hapticIndex
 
         if previousIndex != newIndex {
-            feedbackGenerator.impactOccurred(intensity: 1.0)
-            feedbackGenerator.prepare()
+            SliderHaptics.shared.tick()
         }
 
         lastHapticIndex = newIndex
@@ -3284,7 +3346,6 @@ private struct DiscreteLandscapeSlider: View {
     private let trackHeight: CGFloat = 5
     private let thumbSize: CGFloat = 26
     @State private var lastHapticIndex: Int?
-    @State private var feedbackGenerator = UIImpactFeedbackGenerator(style: .rigid)
 
     var body: some View {
         GeometryReader { proxy in
@@ -3370,13 +3431,11 @@ private struct DiscreteLandscapeSlider: View {
 
         if lastHapticIndex == nil {
             lastHapticIndex = Int(((value - range.lowerBound) / max(step, .ulpOfOne)).rounded())
-            feedbackGenerator = UIImpactFeedbackGenerator(style: .rigid)
-            feedbackGenerator.prepare()
+            SliderHaptics.shared.prepare()
         }
 
         if providesFeedback, lastHapticIndex != newIndex {
-            feedbackGenerator.impactOccurred(intensity: 1.0)
-            feedbackGenerator.prepare()
+            SliderHaptics.shared.tick()
         }
 
         lastHapticIndex = newIndex
