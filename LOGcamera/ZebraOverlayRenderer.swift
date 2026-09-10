@@ -26,7 +26,7 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
                           float stripeBlue) {
             float3 rgb = clamp(image.rgb, 0.0, 1.0);
             float signal = max(rgb.r, max(rgb.g, rgb.b));
-            float mask = smoothstep(threshold - softness, threshold + softness, signal);
+            float mask = smoothstep(threshold - softness, threshold, signal);
             if (mask <= 0.001) {
                 return vec4(0.0, 0.0, 0.0, 0.0);
             }
@@ -34,10 +34,11 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
             vec2 p = destCoord();
             float stripe = step(0.5, fract((p.x + p.y) / stripeWidth));
             if (stripe > 0.0) {
-                return vec4(stripeRed, stripeGreen, stripeBlue, 0.90 * mask);
+                float alpha = 0.98 * mask;
+                return vec4(vec3(stripeRed, stripeGreen, stripeBlue) * alpha, alpha);
             }
 
-            return vec4(0.0, 0.0, 0.0, 0.60 * mask);
+            return vec4(0.0, 0.0, 0.0, 0.85 * mask);
         }
         """
         return CIColorKernel(source: source)
@@ -157,12 +158,13 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
         guard let kernel = Self.zebraKernel else { return nil }
         guard let sourceImage = monitoringImage(for: frame, lookMode: lookMode) else { return nil }
         let measurementImage = sourceImage
+            .transformed(by: aspectFillTransform(for: sourceImage.extent, in: bounds))
             .clampedToExtent()
             .applyingFilter(
                 "CIGaussianBlur",
-                parameters: [kCIInputRadiusKey: 1.2]
+                parameters: [kCIInputRadiusKey: 0.4]
             )
-            .cropped(to: sourceImage.extent)
+            .cropped(to: bounds)
         let stripeColor = channel.colorComponents
         guard let overlayImage = kernel.apply(
             extent: measurementImage.extent,
@@ -179,9 +181,7 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
             return nil
         }
 
-        return overlayImage.transformed(
-            by: aspectFillTransform(for: sourceImage.extent, in: bounds)
-        )
+        return overlayImage
     }
 
     private func monitoringImage(for frame: PreviewFrame, lookMode: PreviewLookMode) -> CIImage? {
@@ -192,11 +192,10 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
             return colorManagedImage(for: frame.pixelBuffer)
         }
 
+        // Video thresholds describe the Rec.709 monitoring signal, regardless
+        // of whether the user displays Log or the conversion LUT.
         switch lookMode {
-        case .log:
-            return colorManagedImage(for: frame.pixelBuffer)
-
-        case .rec709:
+        case .log, .rec709:
             let rawImage = CIImage(
                 cvPixelBuffer: frame.pixelBuffer,
                 options: [
@@ -263,7 +262,6 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
     private let lutProcessor = PreviewLUTProcessor()
     private let stateQueue = DispatchQueue(label: "com.logcamera.focusPeakingOverlayState")
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-    private static let photoRawPreviewExposureEV = -0.58
 
     private var latestFrame: PreviewFrame?
     private var isEnabled = false
@@ -284,7 +282,8 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
                 return vec4(0.0, 0.0, 0.0, 0.0);
             }
 
-            return vec4(peakRed, peakGreen, peakBlue, min(0.95, mask * 0.92));
+            float alpha = 0.98 * mask;
+            return vec4(vec3(peakRed, peakGreen, peakBlue) * alpha, alpha);
         }
         """
         return CIColorKernel(source: source)
@@ -397,10 +396,15 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
                                   sensitivityPercent: Int,
                                   lookMode: PreviewLookMode) -> CIImage? {
         guard let kernel = Self.peakingKernel else { return nil }
-        guard let sourceImage = monitoringImage(for: frame, lookMode: lookMode) else { return nil }
+        guard let monitoringImage = monitoringImage(for: frame, lookMode: lookMode) else { return nil }
+        // Detect edges at display resolution so thin sensor-pixel outlines do
+        // not disappear when a high-resolution Photo frame is downscaled.
+        let sourceImage = monitoringImage.transformed(
+            by: aspectFillTransform(for: monitoringImage.extent, in: bounds)
+        ).cropped(to: bounds)
 
         let normalizedSensitivity = Float(sensitivityPercent - 20) / 80
-        let threshold = 0.28 - (0.16 * normalizedSensitivity)
+        let threshold = 0.22 - (0.17 * normalizedSensitivity)
         let edgeIntensity = 2.4 + (4.8 * Double(normalizedSensitivity))
 
         let monochromeImage = sourceImage
@@ -423,6 +427,7 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
                 "CIEdges",
                 parameters: [kCIInputIntensityKey: edgeIntensity]
             )
+            .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: 1.0])
             .cropped(to: sourceImage.extent)
 
         guard let overlayImage = kernel.apply(
@@ -430,7 +435,7 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
             arguments: [
                 edgesImage,
                 threshold,
-                0.10,
+                0.05,
                 0.12,
                 0.98,
                 0.30
@@ -439,14 +444,12 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
             return nil
         }
 
-        return overlayImage.transformed(
-            by: aspectFillTransform(for: sourceImage.extent, in: bounds)
-        )
+        return overlayImage
     }
 
     private func monitoringImage(for frame: PreviewFrame, lookMode: PreviewLookMode) -> CIImage? {
         if frame.captureMode == .photo {
-            return photoRawMatchedImage(for: frame.pixelBuffer)
+            return colorManagedImage(for: frame.pixelBuffer)
         }
 
         switch lookMode {
@@ -472,14 +475,6 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
             filter.setValue(cube.data, forKey: "inputCubeData")
             return filter.outputImage?.cropped(to: rawImage.extent) ?? rawImage
         }
-    }
-
-    private func photoRawMatchedImage(for pixelBuffer: CVPixelBuffer) -> CIImage {
-        colorManagedImage(for: pixelBuffer)
-            .applyingFilter(
-                "CIExposureAdjust",
-                parameters: [kCIInputEVKey: Self.photoRawPreviewExposureEV]
-            )
     }
 
     private func colorManagedImage(for pixelBuffer: CVPixelBuffer) -> CIImage {
