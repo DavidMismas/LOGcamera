@@ -125,7 +125,7 @@ private struct ExpandedHitRectangle: Shape {
 }
 
 struct ContentView: View {
-    private static let currentOnboardingVersion = 1
+    private static let currentOnboardingVersion = 3
 
     @StateObject private var cameraManager = CameraManager()
     @Environment(\.scenePhase) private var scenePhase
@@ -2070,9 +2070,11 @@ private struct CameraSettingsView: View {
     private var photoSection: some View {
         collapsiblePanel(
             title: "Photo",
-            subtitle: cameraManager.canCapturePhoto
-                ? "\(cameraManager.photoRAWFormat.title) ready"
-                : "\(cameraManager.photoRAWFormat.title) unavailable",
+            subtitle: cameraManager.captureMode == .video
+                ? cameraManager.photoRAWFormat.title
+                : cameraManager.canCapturePhoto
+                    ? "\(cameraManager.photoRAWFormat.title) ready"
+                    : "\(cameraManager.photoRAWFormat.title) unavailable",
             icon: "camera.fill",
             isExpanded: $isPhotoExpanded
         ) {
@@ -2120,7 +2122,10 @@ private struct CameraSettingsView: View {
                 }
             }
 
-            settingsRow(title: "Companion", detail: cameraManager.canCapturePhoto ? "DNG base" : "RAW off") {
+            settingsRow(
+                title: "Companion",
+                detail: cameraManager.captureMode == .video || cameraManager.canCapturePhoto ? "DNG base" : "RAW off"
+            ) {
                 optionStrip {
                     ForEach(PhotoCompanionFormat.allCases) { format in
                         selectionButton(
@@ -2687,11 +2692,15 @@ private enum RawlightOnboardingMode {
 private struct RawlightOnboardingView: View {
     private enum Page: CaseIterable {
         case welcome
+        case permissions
+        case controls
+        case formats
+    }
+
+    private enum PermissionKind: CaseIterable, Equatable {
         case camera
         case photos
         case microphone
-        case controls
-        case formats
     }
 
     private enum PermissionState {
@@ -2705,7 +2714,7 @@ private struct RawlightOnboardingView: View {
     let onComplete: () -> Void
 
     @State private var pageIndex = 0
-    @State private var isRequestingPermission = false
+    @State private var requestingPermission: PermissionKind?
 
     private var pages: [Page] {
         switch mode {
@@ -2766,13 +2775,15 @@ private struct RawlightOnboardingView: View {
 
             Spacer(minLength: 0)
 
-            Button(mode == .firstLaunch ? "Skip" : "Close") {
-                onComplete()
+            if mode == .quickGuide {
+                Button("Close") {
+                    onComplete()
+                }
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.textSecondary)
+                .buttonStyle(.plain)
+                .frame(minWidth: 48, minHeight: 44)
             }
-            .font(.system(size: 12, weight: .bold, design: .monospaced))
-            .foregroundStyle(AppTheme.textSecondary)
-            .buttonStyle(.plain)
-            .frame(minWidth: 48, minHeight: 44)
         }
         .padding(.horizontal, 18)
         .padding(.top, 10)
@@ -2797,8 +2808,8 @@ private struct RawlightOnboardingView: View {
             }
 
             switch page {
-            case .camera, .photos, .microphone:
-                permissionStatusPanel
+            case .permissions:
+                permissionsPanel
             case .controls:
                 VStack(spacing: 10) {
                     guideRow(icon: "hand.tap.fill", title: "TAP TO METER", detail: "Tap the preview to place focus and exposure. Tap again to lock the point.")
@@ -2857,24 +2868,60 @@ private struct RawlightOnboardingView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var permissionStatusPanel: some View {
-        HStack(spacing: 12) {
-            Image(systemName: permissionState == .allowed ? "checkmark.circle.fill" : permissionState == .denied ? "exclamationmark.circle.fill" : "circle.dashed")
-                .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(permissionState == .allowed ? Color.green.opacity(0.9) : permissionState == .denied ? Color.yellow.opacity(0.9) : AppTheme.accent)
+    private var permissionsPanel: some View {
+        VStack(spacing: 10) {
+            ForEach(PermissionKind.allCases, id: \.self) { permission in
+                permissionRow(permission)
+            }
+        }
+    }
+
+    private func permissionRow(_ permission: PermissionKind) -> some View {
+        let state = permissionState(for: permission)
+        let isRequesting = requestingPermission == permission
+
+        return HStack(spacing: 12) {
+            Image(systemName: permissionIcon(for: permission))
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(AppTheme.textPrimary)
+                .frame(width: 38, height: 38)
+                .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(permissionStatusTitle)
-                    .font(.system(size: 12, weight: .black, design: .monospaced))
+                Text(permissionTitle(for: permission))
+                    .font(.system(size: 11, weight: .black, design: .monospaced))
                     .foregroundStyle(AppTheme.textPrimary)
-                Text(permissionStatusDetail)
-                    .font(.system(size: 11, weight: .medium))
+                Text(permissionDetail(for: permission))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(AppTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+
+            Button {
+                handlePermissionTap(permission)
+            } label: {
+                Group {
+                    if isRequesting {
+                        ProgressView()
+                            .tint(AppTheme.textPrimary)
+                    } else {
+                        Text(permissionButtonTitle(for: state))
+                    }
+                }
+                .font(.system(size: 10, weight: .black, design: .monospaced))
+                .foregroundStyle(state == .allowed ? AppTheme.textSecondary : AppTheme.textPrimary)
+                .frame(minWidth: 76, minHeight: 38)
+                .background(
+                    state == .allowed ? Color.white.opacity(0.08) : AppTheme.accent,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(state == .allowed || requestingPermission != nil)
         }
-        .padding(16)
+        .padding(14)
         .frame(maxWidth: .infinity)
         .metalRoundedPanel(cornerRadius: 14)
     }
@@ -2918,17 +2965,11 @@ private struct RawlightOnboardingView: View {
 
             Button(action: primaryAction) {
                 HStack(spacing: 9) {
-                    if isRequestingPermission {
-                        ProgressView()
-                            .tint(AppTheme.textPrimary)
-                    }
                     Text(primaryButtonTitle)
                         .font(.system(size: 13, weight: .black, design: .monospaced))
                         .tracking(0.5)
-                    if !isRequestingPermission {
-                        Image(systemName: isLastPage ? "checkmark" : "arrow.right")
-                            .font(.system(size: 13, weight: .black))
-                    }
+                    Image(systemName: isLastPage ? "checkmark" : "arrow.right")
+                        .font(.system(size: 13, weight: .black))
                 }
                 .foregroundStyle(AppTheme.textPrimary)
                 .frame(maxWidth: .infinity)
@@ -2936,16 +2977,8 @@ private struct RawlightOnboardingView: View {
                 .background(AppTheme.activeGradient, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
             .buttonStyle(.plain)
-            .disabled(isRequestingPermission)
-
-            if isPermissionPage, permissionState == .denied {
-                Button("Continue without access") {
-                    advance()
-                }
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundStyle(AppTheme.textSecondary)
-                .buttonStyle(.plain)
-            }
+            .disabled(requestingPermission != nil || hasUnrequestedPermissions)
+            .opacity(hasUnrequestedPermissions ? 0.45 : 1)
         }
         .padding(.horizontal, 24)
         .padding(.top, 12)
@@ -2956,9 +2989,7 @@ private struct RawlightOnboardingView: View {
     private var pageTitle: String {
         switch page {
         case .welcome: return "Shoot your way"
-        case .camera: return "Camera access"
-        case .photos: return "Save your shots"
-        case .microphone: return "Record sound"
+        case .permissions: return "Set up access"
         case .controls: return "Stay in control"
         case .formats: return "Choose your format"
         }
@@ -2968,12 +2999,8 @@ private struct RawlightOnboardingView: View {
         switch page {
         case .welcome:
             return "Manual photography, sensor RAW and Apple Log video in one focused camera."
-        case .camera:
-            return "Rawlight needs camera access to show the live preview and capture photos and video."
-        case .photos:
-            return "Allow add-only Photos access so Rawlight can save your finished captures to your library."
-        case .microphone:
-            return "Microphone access adds sound to video. Photos and silent video remain available without it."
+        case .permissions:
+            return "Continue with each permission separately. Rawlight will only show a system request after you tap its button."
         case .controls:
             return "The most important controls stay close to the preview, ready when you need them."
         case .formats:
@@ -2984,20 +3011,14 @@ private struct RawlightOnboardingView: View {
     private var pageIcon: String {
         switch page {
         case .welcome: return "camera.aperture"
-        case .camera: return "camera.fill"
-        case .photos: return "photo.on.rectangle.angled"
-        case .microphone: return "mic.fill"
+        case .permissions: return "checkmark.shield.fill"
         case .controls: return "dial.medium.fill"
         case .formats: return "circle.grid.cross"
         }
     }
 
-    private var isPermissionPage: Bool {
-        page == .camera || page == .photos || page == .microphone
-    }
-
-    private var permissionState: PermissionState {
-        switch page {
+    private func permissionState(for permission: PermissionKind) -> PermissionState {
+        switch permission {
         case .camera:
             switch cameraManager.cameraAuthorizationStatus {
             case .authorized: return .allowed
@@ -3016,46 +3037,49 @@ private struct RawlightOnboardingView: View {
             case .notDetermined: return .notDetermined
             default: return .denied
             }
-        default:
-            return .allowed
         }
     }
 
-    private var permissionStatusTitle: String {
-        switch permissionState {
-        case .notDetermined: return "NOT REQUESTED"
-        case .allowed: return "ACCESS ALLOWED"
-        case .denied: return "ACCESS DISABLED"
+    private func permissionIcon(for permission: PermissionKind) -> String {
+        switch permission {
+        case .camera: return "camera.fill"
+        case .photos: return "photo.on.rectangle.angled"
+        case .microphone: return "mic.fill"
         }
     }
 
-    private var permissionStatusDetail: String {
-        switch permissionState {
-        case .notDetermined: return "Rawlight will show the system permission next."
-        case .allowed: return "This permission is ready."
-        case .denied: return "You can enable it in the iPhone Settings app."
+    private func permissionTitle(for permission: PermissionKind) -> String {
+        switch permission {
+        case .camera: return "CAMERA"
+        case .photos: return "PHOTOS"
+        case .microphone: return "MICROPHONE"
         }
+    }
+
+    private func permissionDetail(for permission: PermissionKind) -> String {
+        switch permission {
+        case .camera: return "Live preview and photo or video capture."
+        case .photos: return "Add finished captures to your library."
+        case .microphone: return "Record sound with video."
+        }
+    }
+
+    private func permissionButtonTitle(for state: PermissionState) -> String {
+        switch state {
+        case .notDetermined: return "CONTINUE"
+        case .allowed: return "ALLOWED"
+        case .denied: return "SETTINGS"
+        }
+    }
+
+    private var hasUnrequestedPermissions: Bool {
+        guard page == .permissions else { return false }
+        return PermissionKind.allCases.contains { permissionState(for: $0) == .notDetermined }
     }
 
     private var primaryButtonTitle: String {
-        guard isPermissionPage else {
-            if page == .welcome { return "GET STARTED" }
-            return isLastPage ? (mode == .firstLaunch ? "START SHOOTING" : "DONE") : "CONTINUE"
-        }
-
-        switch permissionState {
-        case .notDetermined:
-            switch page {
-            case .camera: return "ALLOW CAMERA"
-            case .photos: return "ALLOW PHOTOS"
-            case .microphone: return "ALLOW MICROPHONE"
-            default: return "CONTINUE"
-            }
-        case .allowed:
-            return "CONTINUE"
-        case .denied:
-            return "OPEN SETTINGS"
-        }
+        if page == .welcome { return "GET STARTED" }
+        return isLastPage ? (mode == .firstLaunch ? "START SHOOTING" : "DONE") : "CONTINUE"
     }
 
     private var isLastPage: Bool {
@@ -3063,33 +3087,28 @@ private struct RawlightOnboardingView: View {
     }
 
     private func primaryAction() {
-        guard isPermissionPage else {
-            advance()
-            return
-        }
+        advance()
+    }
 
-        switch permissionState {
+    private func handlePermissionTap(_ permission: PermissionKind) {
+        switch permissionState(for: permission) {
         case .allowed:
-            advance()
+            return
         case .denied:
             openSettings()
         case .notDetermined:
-            isRequestingPermission = true
+            requestingPermission = permission
             let completion: (Bool) -> Void = { _ in
-                isRequestingPermission = false
-                advance()
+                requestingPermission = nil
             }
 
-            switch page {
+            switch permission {
             case .camera:
                 cameraManager.requestCameraPermission(completion: completion)
             case .photos:
                 cameraManager.requestPhotoLibraryPermission(completion: completion)
             case .microphone:
                 cameraManager.requestMicrophonePermission(completion: completion)
-            default:
-                isRequestingPermission = false
-                advance()
             }
         }
     }
@@ -3136,13 +3155,13 @@ private struct PermissionView: View {
                     .multilineTextAlignment(.center)
 
                 Text(cameraManager.cameraAuthorizationStatus == .notDetermined
-                     ? "Allow access to use the live preview and capture photos and video."
+                     ? "Camera access is required for the live preview and for capturing photos and video."
                      : "Enable camera access in Settings to return to the live preview.")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(AppTheme.textSecondary)
                     .multilineTextAlignment(.center)
 
-                Button(cameraManager.cameraAuthorizationStatus == .notDetermined ? "Allow Camera" : "Open Settings") {
+                Button(cameraManager.cameraAuthorizationStatus == .notDetermined ? "Continue" : "Open Settings") {
                     if cameraManager.cameraAuthorizationStatus == .notDetermined {
                         cameraManager.requestCameraPermission { _ in }
                     } else {

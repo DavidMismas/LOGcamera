@@ -523,10 +523,10 @@ final class CameraManager: NSObject, ObservableObject {
     }
     @Published private(set) var isSwitchingCaptureMode = false
 
-    @Published var captureMode: CaptureMode = .video {
+    @Published var captureMode: CaptureMode = .photo {
         didSet { UserDefaults.standard.set(captureMode.rawValue, forKey: SettingsKey.captureMode) }
     }
-    @Published var defaultCaptureMode: CaptureMode = .video {
+    @Published var defaultCaptureMode: CaptureMode = .photo {
         didSet { UserDefaults.standard.set(defaultCaptureMode.rawValue, forKey: SettingsKey.defaultCaptureMode) }
     }
     @Published var selectedFrameRate = 30 {
@@ -2767,6 +2767,11 @@ final class CameraManager: NSObject, ObservableObject {
     private func installAudioInputIfPossible() {
         guard audioInput == nil else {
             refreshAudioInputConfiguration()
+            return
+        }
+
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+            publishAudioInputStatus(input: nil, activeMode: nil)
             return
         }
 
