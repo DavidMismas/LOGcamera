@@ -2850,11 +2850,19 @@ final class CameraManager: NSObject, ObservableObject {
     private func configureAudioInput(_ input: AVCaptureDeviceInput) {
         let supportedModes = supportedVideoAudioModes(for: input)
         let appliedMode = supportedModes.contains(videoAudioMode) ? videoAudioMode : .mono
+        let multichannelAudioMode = appliedMode.multichannelAudioMode
 
-        input.multichannelAudioMode = appliedMode.multichannelAudioMode
-        input.isWindNoiseRemovalEnabled = input.isWindNoiseRemovalSupported &&
-            appliedMode != .mono &&
-            videoWindNoiseReductionEnabled
+        if input.multichannelAudioMode != multichannelAudioMode {
+            input.multichannelAudioMode = multichannelAudioMode
+        }
+
+        // AVFoundation only permits this setter while multichannel audio is active.
+        // Calling it with `false` in mono mode can still raise an Objective-C exception.
+        if multichannelAudioMode != .none,
+           input.isWindNoiseRemovalSupported,
+           input.isWindNoiseRemovalEnabled != videoWindNoiseReductionEnabled {
+            input.isWindNoiseRemovalEnabled = videoWindNoiseReductionEnabled
+        }
 
         publishAudioInputStatus(input: input, activeMode: appliedMode)
     }

@@ -4,6 +4,18 @@ This file records ideas for future Rawlight releases. Items are not commitments 
 
 ## Planned features
 
+### 4K 120 fps recording reliability
+
+Treat smooth 4K 120 fps recording as a priority correctness fix after version 1.0.0 is approved. It currently exhibits frequent skipped frames on an iPhone 17 Pro even though the selected camera format advertises 4K 120 fps support.
+
+Instrument the capture pipeline before changing behavior. Count and classify frames reported through the dropped-frame delegate, record gaps in source presentation timestamps, measure `AVAssetWriterInput.isReadyForMoreMediaData` backpressure, and log thermal state, selected lens and format, stabilization, codec, bitrate, pixel format, and storage conditions.
+
+The current design sends full-resolution video and audio callbacks to the same serial writer queue. That video callback appends to `AVAssetWriter`, creates normalized timing copies, dispatches preview frames, and performs camera-state readback. Because `alwaysDiscardsLateVideoFrames` is enabled, blocking this queue can immediately drop incoming 120 fps frames. Separate the minimal capture-and-write path from preview and UI work, throttle monitoring independently, and avoid silently discarding frames when the writer reports backpressure.
+
+Review the synthetic sequential video timestamps. Preserve source timing or account explicitly for dropped frames so video duration and audio timing cannot diverge. Prefer AVFoundation's recommended writer settings and media timescale for the active output, then apply only the overrides Rawlight actually needs.
+
+Validate at minimum HEVC and every exposed ProRes option separately, with stabilization off and on where supported. Test cold and warm-device runs of at least 1, 5, and 10 minutes. Acceptance requires stable cadence and audio sync, no unexplained timestamp discontinuities, no silent writer drops, and a clear warning or unavailable state for combinations the device cannot sustain.
+
 ### Horizon level
 
 Add a clear visual level for roll and, where useful, pitch. It should use Core Motion, match the existing dark/red interface, settle smoothly, and provide subtle haptic feedback when the camera reaches level. It must work in both Photo and Video modes and be optional in Settings.
@@ -32,6 +44,18 @@ Use runtime checks such as the photo output's available codec and file types. Ne
 
 ## Recommended additions
 
+### Customizable quick controls
+
+After version 1.0.0 is approved and stable, redesign the main capture screen so a small set of frequently used functions is available without opening Settings. Use NoFusion only as a reference for information hierarchy and speed of access; keep Rawlight's own dark/crimson visual language, control shapes, typography, and interaction patterns.
+
+Provide separate customizable quick-control layouts for Photo and Video modes. Start with a curated default layout, then let the user choose and reorder a limited number of slots. A long press on the quick-control strip can enter edit mode; normal taps should either toggle a setting immediately or open a compact picker without leaving the camera.
+
+Good Photo candidates include RAW or processed format, resolution, image quality, companion file, aspect-ratio guides, flash, grid, horizon level, zebras, focus peaking, metering behavior, and lens selection. Good Video candidates include color profile, codec, resolution, frame rate, monitoring look, stabilization, audio mode, torch, grid, horizon level, zebras, focus peaking, and white-balance or exposure lock.
+
+Keep ISO, shutter, white balance, focus, shutter/record, lens switching, and exposure compensation in their established primary locations rather than duplicating every control. Limit the customizable strip to roughly four or five visible items so the live preview remains dominant. Active controls should use Rawlight red, neutral controls white or gray, and warnings amber. Unsupported options should be omitted or replaced instead of remaining as misleading disabled shortcuts.
+
+The control layout must adapt to orientation, Dynamic Island and safe-area insets, and different screen sizes without moving the shutter button or core manual controls. Persist Photo and Video layouts separately and include a Restore Defaults action.
+
 ### Histogram and waveform
 
 Add a compact luminance histogram for Photo mode and an optional luma waveform for Video mode. These would complement zebras and make Rawlight's manual exposure workflow more complete without changing the core interface.
@@ -58,5 +82,4 @@ Investigate recording large video files directly to supported external storage, 
 
 ## Suggested priority
 
-For the first update after App Store approval, prioritize processed HEIC/JPEG-only photos, standard Rec.709 SDR video, and the horizon level. Next, add histogram or waveform and capture presets. Treat variable aperture as a hardware-dependent feature for iOS 27 devices, and add JPEG-XL only after device-level compatibility and file-readback testing.
-
+For the first update after App Store approval, fix and validate 4K 120 fps recording before adding features. Then prioritize processed HEIC/JPEG-only photos, standard Rec.709 SDR video, the horizon level, and a carefully limited customizable quick-control strip. Next, add histogram or waveform and capture presets. Treat variable aperture as a hardware-dependent feature for iOS 27 devices, and add JPEG-XL only after device-level compatibility and file-readback testing.
