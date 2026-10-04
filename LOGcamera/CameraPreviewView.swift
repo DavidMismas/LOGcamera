@@ -24,6 +24,7 @@ struct CameraPreviewView: UIViewRepresentable {
         view.setFocusPeakingEnabled(cameraManager.effectiveFocusPeakingEnabled)
         view.setFocusPeakingSensitivity(cameraManager.focusPeakingSensitivityPercent)
         view.setCaptureMode(cameraManager.captureMode)
+        view.setSystemPreviewEnabled(cameraManager.usesSystemPreviewForVideo)
         view.setPhotoMeteringPointsLinked(cameraManager.effectivePhotoMeteringPointsLinked)
         view.setPhotoMeteringHandlesVisible(cameraManager.photoMeteringHandlesVisible)
         view.setPreviewSuspended(isSuspended)
@@ -67,6 +68,7 @@ struct CameraPreviewView: UIViewRepresentable {
         uiView.setFocusPeakingEnabled(cameraManager.effectiveFocusPeakingEnabled)
         uiView.setFocusPeakingSensitivity(cameraManager.focusPeakingSensitivityPercent)
         uiView.setCaptureMode(cameraManager.captureMode)
+        uiView.setSystemPreviewEnabled(cameraManager.usesSystemPreviewForVideo)
         uiView.setPhotoMeteringPointsLinked(cameraManager.effectivePhotoMeteringPointsLinked)
         uiView.setPhotoMeteringHandlesVisible(cameraManager.photoMeteringHandlesVisible)
         uiView.setPreviewSuspended(isSuspended)
@@ -317,6 +319,7 @@ final class PreviewView: UIView {
     private var currentPreviewRotationAngle: CGFloat = 0
     private var currentPreviewLookMode: PreviewLookMode = .log
     private var currentCaptureMode: CaptureMode = .video
+    private var usesSystemPreview = false
     private var isPreviewSuspended = false
     private var isZebraEnabled = false
     private var isFocusPeakingEnabled = false
@@ -415,8 +418,10 @@ final class PreviewView: UIView {
             guard let self else { return }
             guard !self.isPreviewSuspended else { return }
             self.previewRenderer?.enqueue(frame)
-            self.zebraRenderer?.enqueue(frame)
-            self.focusPeakingRenderer?.enqueue(frame)
+            if !self.usesSystemPreview {
+                self.zebraRenderer?.enqueue(frame)
+                self.focusPeakingRenderer?.enqueue(frame)
+            }
         }
         applyConnectionConfiguration(from: cameraManager)
     }
@@ -434,6 +439,17 @@ final class PreviewView: UIView {
         currentCaptureMode = mode
         if mode != .photo {
             hidePhotoMeteringHandles()
+        }
+        updateVisiblePreviewMode()
+    }
+
+    func setSystemPreviewEnabled(_ isEnabled: Bool) {
+        guard usesSystemPreview != isEnabled else { return }
+        usesSystemPreview = isEnabled
+        if isEnabled {
+            previewRenderer?.clear()
+            zebraRenderer?.clear()
+            focusPeakingRenderer?.clear()
         }
         updateVisiblePreviewMode()
     }
@@ -458,7 +474,7 @@ final class PreviewView: UIView {
     func setZebraEnabled(_ isEnabled: Bool) {
         guard isZebraEnabled != isEnabled else { return }
         isZebraEnabled = isEnabled
-        zebraSurface.isHidden = !isEnabled
+        zebraSurface.isHidden = !isEnabled || usesSystemPreview
         zebraRenderer?.setEnabled(isEnabled)
         if isEnabled {
             bringSubviewToFront(zebraSurface)
@@ -479,7 +495,7 @@ final class PreviewView: UIView {
     func setFocusPeakingEnabled(_ isEnabled: Bool) {
         guard isFocusPeakingEnabled != isEnabled else { return }
         isFocusPeakingEnabled = isEnabled
-        focusPeakingSurface.isHidden = !isEnabled
+        focusPeakingSurface.isHidden = !isEnabled || usesSystemPreview
         focusPeakingRenderer?.setEnabled(isEnabled)
         if isEnabled {
             bringSubviewToFront(focusPeakingSurface)
@@ -705,10 +721,12 @@ final class PreviewView: UIView {
     }
 
     private func updateVisiblePreviewMode() {
-        let showSampleBufferPreview = previewRenderer != nil
+        let showSampleBufferPreview = previewRenderer != nil && !usesSystemPreview
         previewSurface.isHidden = !showSampleBufferPreview
         previewSurface.alpha = 1
         conversionPreviewLayer.isHidden = showSampleBufferPreview
+        zebraSurface.isHidden = !isZebraEnabled || usesSystemPreview
+        focusPeakingSurface.isHidden = !isFocusPeakingEnabled || usesSystemPreview
         if showSampleBufferPreview {
             bringSubviewToFront(previewSurface)
         }

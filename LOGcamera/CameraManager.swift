@@ -870,16 +870,32 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     var recordingBitrateLabel: String {
-        String(format: "%.0f Mb/s", recordingBitrateMbps)
+        if usesHighRateHEVCWriter {
+            return "Auto"
+        }
+        return String(format: "%.0f Mb/s", recordingBitrateMbps)
     }
 
     var allowsCustomBitrate: Bool {
-        selectedVideoCodec.supportsManualBitrate
+        selectedVideoCodec.supportsManualBitrate && !usesHighRateHEVCWriter
     }
 
     private var usesDirectMovieRecording: Bool {
-        !selectedVideoCodec.supportsManualBitrate ||
-            (selectedVideoCodec == .hevc && selectedFrameRate >= 120)
+        !selectedVideoCodec.supportsManualBitrate
+    }
+
+    private var usesHighRateHEVCWriter: Bool {
+        selectedVideoCodec == .hevc &&
+            selectedVideoResolution == .uhd4K &&
+            selectedFrameRate >= 120
+    }
+
+    var usesSystemPreviewForVideo: Bool {
+        captureMode == .video && usesHighRateHEVCWriter
+    }
+
+    var effectivePreviewLookMode: PreviewLookMode {
+        usesSystemPreviewForVideo ? .log : previewLookMode
     }
 
     var previewAspectRatio: CGFloat {
@@ -973,6 +989,22 @@ final class CameraManager: NSObject, ObservableObject {
         qos: .userInteractive,
         autoreleaseFrequency: .workItem
     )
+    private let videoCaptureQueue = DispatchQueue(
+        label: "com.logcamera.videoCaptureQueue",
+        qos: .userInteractive,
+        autoreleaseFrequency: .workItem
+    )
+    private let audioCaptureQueue = DispatchQueue(
+        label: "com.logcamera.audioCaptureQueue",
+        qos: .userInitiated,
+        autoreleaseFrequency: .workItem
+    )
+    private let queuedVideoFrameSlots = DispatchSemaphore(value: 1)
+    // Read and written exclusively on videoCaptureQueue. The output format
+    // description is available before the shutter is pressed.
+    private var latestVideoFormatDescription: CMFormatDescription?
+    // Access exclusively on sessionQueue so repeated taps cannot queue two starts.
+    private var recordingStartPending = false
     private let photoSaveQueue = DispatchQueue(label: "com.logcamera.photoSaveQueue", qos: .utility)
     private let previewQueue = DispatchQueue(label: "com.logcamera.previewQueue", qos: .userInteractive)
     private let cameraStateReadbackQueue = DispatchQueue(label: "com.logcamera.cameraStateReadbackQueue", qos: .utility)
@@ -981,6 +1013,9 @@ final class CameraManager: NSObject, ObservableObject {
         category: "Recording"
     )
     private var assetWriter: AVAssetWriter?
+    // Access only on writerQueue; UI publication is not a recording gate.
+    private var writerRecordingRequested = false
+    private var pendingWriterURL: URL?
     private var videoWriterInput: AVAssetWriterInput?
     private var audioWriterInput: AVAssetWriterInput?
     private var currentRecordingURL: URL?
@@ -988,7 +1023,6 @@ final class CameraManager: NSObject, ObservableObject {
     private var recordingSessionStartTime: CMTime?
     private var recordingDiagnostics = RecordingDiagnostics()
     private var pendingRecordingLeadInStartTime: CMTime?
-    private var latestVideoSourceFormatDescription: CMFormatDescription?
     private var lastPreviewFrameDispatchTime: TimeInterval = 0
     private var currentCaptureRotationAngle: CGFloat = 0
     private let previewFrameSubject = PassthroughSubject<PreviewFrame, Never>()
@@ -2011,6 +2045,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func startRecording() {
+        recordingLogger.info("Record requested: mode=\(self.captureMode.title, privacy: .public), available=\(self.canRecord)")
         guard captureMode == .video else { return }
         guard !isRecording else { return }
         guard canRecord else {
@@ -2019,7 +2054,9 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         sessionQueue.async {
-            guard !self.isRecording, !self.movieFileOutput.isRecording else { return }
+            guard !self.isRecording, !self.movieFileOutput.isRecording,
+                  !self.recordingStartPending else { return }
+            self.recordingStartPending = true
             self.enableHapticsDuringAudioCapture()
             self.videoDataOutput.alwaysDiscardsLateVideoFrames = true
             self.stopProExposureAutomation()
@@ -2031,14 +2068,73 @@ final class CameraManager: NSObject, ObservableObject {
             do {
                 if self.usesDirectMovieRecording {
                     try self.configureMovieFileOutputForRecording()
+                } else if self.usesHighRateHEVCWriter {
+                    // Preparing the encoder while holding the first recording
+                    // sample caused multi-second timestamp gaps at 4K/120.
+                    // Use the last live sample's format and start the writer
+                    // before accepting recording frames.
+                    self.videoCaptureQueue.async {
+                        let sourceFormat = self.latestVideoFormatDescription
+                        self.writerQueue.async {
+                            do {
+                                guard let sourceFormat else {
+                                    throw CameraConfigurationError(message: "No live video format is available yet. Please try recording again.")
+                                }
+                                let sourceDimensions = CMVideoFormatDescriptionGetDimensions(sourceFormat)
+                                let requiredDimensions = self.selectedVideoResolution.dimensions
+                                guard sourceDimensions.width == requiredDimensions.width,
+                                      sourceDimensions.height == requiredDimensions.height else {
+                                    throw CameraConfigurationError(message: "The camera is still switching video formats. Please try recording again.")
+                                }
+                                let preparationStart = ProcessInfo.processInfo.systemUptime
+                                try self.prepareWriter(at: fileURL, sourceFormatHint: sourceFormat)
+                                guard let writer = self.assetWriter, writer.startWriting() else {
+                                    throw self.assetWriter?.error ?? CameraConfigurationError(message: "HEVC encoder could not start.")
+                                }
+                                self.writerRecordingRequested = true
+                                let preparationMs = (ProcessInfo.processInfo.systemUptime - preparationStart) * 1_000
+                                self.recordingLogger.info("4K120 writer prepared before the first recording frame in \(preparationMs) ms.")
+                                self.sessionQueue.async {
+                                    self.recordingStartPending = false
+                                    DispatchQueue.main.async {
+                                        self.recordedVideoURL = fileURL
+                                        self.recordingDuration = 0
+                                        self.isRecording = true
+                                        self.recordingTimer?.invalidate()
+                                        self.recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+                                            self.recordingDuration += 1
+                                        }
+                                    }
+                                }
+                            } catch {
+                                self.handleWriterFailureIfNeeded(error)
+                                self.sessionQueue.async { self.recordingStartPending = false }
+                            }
+                        }
+                    }
+                    return
                 } else {
-                    try self.prepareWriter(at: fileURL)
+                    self.writerQueue.async {
+                        self.cleanupWriterState()
+                        self.pendingWriterURL = fileURL
+                        self.writerRecordingRequested = true
+                        self.recordingLogger.info("Writer armed; waiting for the first video sample.")
+                        self.writerQueue.asyncAfter(deadline: .now() + 3) {
+                            guard self.writerRecordingRequested,
+                                  self.pendingWriterURL == fileURL else { return }
+                            self.handleWriterFailureIfNeeded(CameraConfigurationError(
+                                message: "The camera did not deliver video frames for recording."
+                            ))
+                        }
+                    }
                 }
             } catch let error as CameraConfigurationError {
+                self.recordingStartPending = false
                 self.restoreDeviceAfterRecording()
                 self.presentStatusMessage("Writer setup failed: \(error.message)")
                 return
             } catch {
+                self.recordingStartPending = false
                 self.restoreDeviceAfterRecording()
                 self.presentStatusMessage("Writer setup failed: \(error.localizedDescription)")
                 return
@@ -2048,6 +2144,8 @@ final class CameraManager: NSObject, ObservableObject {
                 self.currentRecordingURL = fileURL
                 self.movieFileOutput.startRecording(to: fileURL, recordingDelegate: self)
             }
+
+            self.recordingStartPending = false
 
             DispatchQueue.main.async {
                 self.recordedVideoURL = fileURL
@@ -2077,8 +2175,12 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         writerQueue.async {
+            self.writerRecordingRequested = false
+            self.pendingWriterURL = nil
             if self.assetWriter != nil {
                 self.finishWriting()
+            } else if !self.usesDirectMovieRecording {
+                self.presentStatusMessage("No video frames arrived. Please reopen Video mode.")
             }
         }
     }
@@ -2472,7 +2574,6 @@ final class CameraManager: NSObject, ObservableObject {
             self.installAudioInputIfPossible()
             self.installPhotoOutputIfPossible()
             self.updateCaptureFileOutputPresence(for: self.captureMode)
-            self.installDataOutputsIfPossible()
 
             self.configureDeviceForCurrentSelection(inConfiguration: true)
             self.configureOutput()
@@ -2891,27 +2992,32 @@ final class CameraManager: NSObject, ObservableObject {
                 photoOutput.maxPhotoQualityPrioritization = .quality
             }
         }
+
+        installDataOutputsIfPossible(for: mode)
     }
 
     private func configureVideoDataOutputBufferSizing(for mode: CaptureMode) {
         videoDataOutput.automaticallyConfiguresOutputBufferDimensions = false
         // The writer path needs full-resolution buffers. Direct movie recording
         // only needs a lightweight preview proxy here.
-        videoDataOutput.deliversPreviewSizedOutputBuffers = mode != .video ||
-            usesDirectMovieRecording
+        videoDataOutput.deliversPreviewSizedOutputBuffers = mode != .video || usesDirectMovieRecording
     }
 
-    private func installDataOutputsIfPossible() {
-        if session.canAddOutput(videoDataOutput) {
+    private func installDataOutputsIfPossible(for mode: CaptureMode) {
+        if !session.outputs.contains(where: { $0 === videoDataOutput }),
+           session.canAddOutput(videoDataOutput) {
+            videoDataOutput.isDeferredStartEnabled = false
             videoDataOutput.alwaysDiscardsLateVideoFrames = true
-            configureVideoDataOutputBufferSizing(for: captureMode)
+            configureVideoDataOutputBufferSizing(for: mode)
             session.addOutput(videoDataOutput)
             configureVideoDataOutputPixelFormat()
-            videoDataOutput.setSampleBufferDelegate(self, queue: writerQueue)
+            videoDataOutput.setSampleBufferDelegate(self, queue: videoCaptureQueue)
         }
 
-        if session.canAddOutput(audioDataOutput) {
-            audioDataOutput.setSampleBufferDelegate(self, queue: writerQueue)
+        if !session.outputs.contains(where: { $0 === audioDataOutput }),
+           session.canAddOutput(audioDataOutput) {
+            audioDataOutput.isDeferredStartEnabled = false
+            audioDataOutput.setSampleBufferDelegate(self, queue: audioCaptureQueue)
             session.addOutput(audioDataOutput)
         }
     }
@@ -3301,6 +3407,13 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         guard let selection = matchingFormats.sorted(by: { lhs, rhs in
+            if usesHighRateHEVCWriter {
+                let lhsIs420 = isTenBit420Format(lhs.format)
+                let rhsIs420 = isTenBit420Format(rhs.format)
+                if lhsIs420 != rhsIs420 {
+                    return lhsIs420
+                }
+            }
             if selectedStabilizationMode != .off,
                lhs.stabilizationStrength != rhs.stabilizationStrength {
                 return lhs.stabilizationStrength > rhs.stabilizationStrength
@@ -3316,6 +3429,12 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         return selection
+    }
+
+    private func isTenBit420Format(_ format: AVCaptureDevice.Format) -> Bool {
+        let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+        return subtype == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
+            subtype == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
     }
 
     private func bestProfile(for format: AVCaptureDevice.Format) -> CaptureColorProfile {
@@ -3512,6 +3631,19 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         let codecType = selectedVideoCodec.codecType
+        if #available(iOS 27.0, *) {
+            if selectedVideoCodec.supportsManualBitrate {
+                movieFileOutput.usesProVideoStorage = false
+            } else {
+                guard movieFileOutput.isProVideoStorageSupported else {
+                    throw CameraConfigurationError(
+                        message: "\(selectedVideoCodec.title) requires Pro Video Storage, which is unavailable for the current recording configuration."
+                    )
+                }
+                movieFileOutput.usesProVideoStorage = true
+            }
+        }
+        movieFileOutput.setOutputSettings(nil, for: connection)
         let currentOutputSettings = movieFileOutput.outputSettings(for: connection)
         let currentCodecType: AVVideoCodecType? = {
             if let codec = currentOutputSettings[AVVideoCodecKey] as? AVVideoCodecType {
@@ -3524,16 +3656,12 @@ final class CameraManager: NSObject, ObservableObject {
         }()
         let canExplicitlySelectCodec = movieFileOutput.availableVideoCodecTypes.contains(codecType)
         guard canExplicitlySelectCodec || currentCodecType == codecType else {
+            let availableCodecs = movieFileOutput.availableVideoCodecTypes.map(\.rawValue).joined(separator: ", ")
+            let currentCodec = currentCodecType?.rawValue ?? "none"
+            recordingLogger.error(
+                "Movie output cannot select \(codecType.rawValue, privacy: .public): available=[\(availableCodecs, privacy: .public)], current=\(currentCodec, privacy: .public), hardwareCost=\(self.session.hardwareCost)"
+            )
             throw CameraConfigurationError(message: "\(selectedVideoCodec.title) is unavailable for the current recording configuration.")
-        }
-
-        if #available(iOS 27.0, *) {
-            guard movieFileOutput.isProVideoStorageSupported else {
-                throw CameraConfigurationError(
-                    message: "\(selectedVideoCodec.title) requires Pro Video Storage, which is unavailable for the current recording configuration."
-                )
-            }
-            movieFileOutput.usesProVideoStorage = true
         }
 
         if canExplicitlySelectCodec {
@@ -3576,22 +3704,16 @@ final class CameraManager: NSObject, ObservableObject {
         movieFileOutput.metadata = metadata
     }
 
-    private func prepareWriter(at fileURL: URL) throws {
+    private func prepareWriter(at fileURL: URL, sourceFormatHint: CMFormatDescription) throws {
         cleanupWriterState()
 
         let writer = try AVAssetWriter(outputURL: fileURL, fileType: .mov)
-        if #available(iOS 27.0, *), writer.isProVideoStorageSupported {
-            writer.usesProVideoStorage = true
-        }
         if selectedFrameRate >= 85 {
             writer.metadata = [fullFrameRatePlaybackIntentMetadata()]
         }
         let videoSettings = try makeVideoWriterSettings(outputURL: fileURL)
         guard writer.canApply(outputSettings: videoSettings, forMediaType: .video) else {
             throw CameraConfigurationError(message: "\(selectedVideoCodec.title) is unavailable for the current recording configuration.")
-        }
-        let sourceFormatHint = writerQueue.sync {
-            latestVideoSourceFormatDescription
         }
         let videoInput = AVAssetWriterInput(
             mediaType: .video,
@@ -3642,6 +3764,20 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         let codecType = selectedVideoCodec.codecType
+        if usesHighRateHEVCWriter {
+            // Match the minimal hardware-encoder configuration embedded by
+            // Final Cut Camera in its 4K120 Apple Log HEVC recordings.
+            return [
+                AVVideoCodecKey: codecType,
+                AVVideoWidthKey: Int(dimensions.width),
+                AVVideoHeightKey: Int(dimensions.height),
+                AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
+                AVVideoCompressionPropertiesKey: [
+                    AVVideoExpectedSourceFrameRateKey: selectedFrameRate
+                ]
+            ]
+        }
+
         let availableCodecs = videoDataOutput.availableVideoCodecTypesForAssetWriter(writingTo: .mov)
         let recommendedSettings = availableCodecs.contains(codecType)
             ? videoDataOutput.recommendedVideoSettings(
@@ -3682,13 +3818,26 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard isRecording,
-              let writer = assetWriter,
-              let videoInput = videoWriterInput else { return }
-
-        if shouldDelayRecordingStart(for: sampleBuffer) {
-            return
+        guard writerRecordingRequested else { return }
+        guard CMSampleBufferDataIsReady(sampleBuffer),
+              let sourceFormat = CMSampleBufferGetFormatDescription(sampleBuffer),
+              CMFormatDescriptionGetMediaType(sourceFormat) == kCMMediaType_Video else { return }
+        if let fileURL = pendingWriterURL {
+            let sourceDimensions = CMVideoFormatDescriptionGetDimensions(sourceFormat)
+            let requiredDimensions = selectedVideoResolution.dimensions
+            guard sourceDimensions.width == requiredDimensions.width,
+                  sourceDimensions.height == requiredDimensions.height else { return }
+            do {
+                try prepareWriter(at: fileURL, sourceFormatHint: sourceFormat)
+                pendingWriterURL = nil
+                recordingLogger.info("Writer configured from the first video sample.")
+            } catch {
+                handleWriterFailureIfNeeded(error)
+                return
+            }
         }
+        guard let writer = assetWriter,
+              let videoInput = videoWriterInput else { return }
 
         guard startWritingIfNeeded(with: writer, sampleBuffer: sampleBuffer) else { return }
 
@@ -3700,13 +3849,17 @@ final class CameraManager: NSObject, ObservableObject {
             return
         }
 
+        let appendStart = ProcessInfo.processInfo.systemUptime
         if !videoInput.append(sampleBuffer) {
             handleWriterFailureIfNeeded(writer.error)
+        } else if recordingDiagnostics.capturedVideoFrames == 1 {
+            let firstAppendMs = (ProcessInfo.processInfo.systemUptime - appendStart) * 1_000
+            recordingLogger.info("First video sample appended in \(firstAppendMs) ms.")
         }
     }
 
     private func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard isRecording,
+        guard writerRecordingRequested,
               let writer = assetWriter,
               let audioInput = audioWriterInput,
               isWritingSessionStarted,
@@ -3729,18 +3882,16 @@ final class CameraManager: NSObject, ObservableObject {
             return false
         }
 
-        if writer.status == .writing {
-            return true
-        }
-
-        guard writer.status == .unknown else {
+        guard writer.status == .unknown || writer.status == .writing else {
             handleWriterFailureIfNeeded(writer.error ?? CameraConfigurationError(message: "\(selectedVideoCodec.title) writer entered an invalid state."))
             return false
         }
 
-        guard writer.startWriting() else {
-            handleWriterFailureIfNeeded(writer.error ?? CameraConfigurationError(message: "AVAssetWriter could not start \(selectedVideoCodec.title) recording."))
-            return false
+        if writer.status == .unknown {
+            guard writer.startWriting() else {
+                handleWriterFailureIfNeeded(writer.error ?? CameraConfigurationError(message: "AVAssetWriter could not start \(selectedVideoCodec.title) recording."))
+                return false
+            }
         }
 
         let sourceStartTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
@@ -3806,6 +3957,9 @@ final class CameraManager: NSObject, ObservableObject {
         let activeFormat = captureDevice
             .map { fourCharacterCode(CMFormatDescriptionGetMediaSubType($0.activeFormat.formatDescription)) } ?? "unknown"
         let thermalState = thermalStateDescription(ProcessInfo.processInfo.thermalState)
+        let bitrateDescription = usesHighRateHEVCWriter
+            ? "hardware-managed"
+            : "\(recordingBitrateMbps) Mbps"
         let proVideoStorage: String
         if #available(iOS 27.0, *) {
             proVideoStorage = assetWriter?.usesProVideoStorage == true ? "enabled" : "disabled"
@@ -3814,7 +3968,7 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         recordingLogger.info(
-            "Recording started: \(dimensions.width)x\(dimensions.height) @ \(self.selectedFrameRate) fps, codec=\(self.selectedVideoCodec.title, privacy: .public), bitrate=\(self.recordingBitrateMbps) Mbps, activeFormat=\(activeFormat, privacy: .public), pixelFormat=\(pixelFormat, privacy: .public), lens=\(lensName, privacy: .public), stabilization=\(self.activeStabilizationTitle, privacy: .public), proVideoStorage=\(proVideoStorage, privacy: .public), thermal=\(thermalState, privacy: .public), storage=\(availableStorage, privacy: .public)"
+            "Recording started: \(dimensions.width)x\(dimensions.height) @ \(self.selectedFrameRate) fps, codec=\(self.selectedVideoCodec.title, privacy: .public), bitrate=\(bitrateDescription, privacy: .public), activeFormat=\(activeFormat, privacy: .public), pixelFormat=\(pixelFormat, privacy: .public), lens=\(lensName, privacy: .public), stabilization=\(self.activeStabilizationTitle, privacy: .public), proVideoStorage=\(proVideoStorage, privacy: .public), thermal=\(thermalState, privacy: .public), storage=\(availableStorage, privacy: .public)"
         )
     }
 
@@ -3839,6 +3993,9 @@ final class CameraManager: NSObject, ObservableObject {
             recordingDiagnostics.maximumTimestampGapSeconds,
             gapSeconds
         )
+        if gapSeconds > 0.5 {
+            recordingLogger.warning("Video source timestamp gap: \(gapSeconds * 1_000) ms after frame \(self.recordingDiagnostics.capturedVideoFrames).")
+        }
     }
 
     private func recordDroppedVideoFrame(_ sampleBuffer: CMSampleBuffer) {
@@ -3908,6 +4065,13 @@ final class CameraManager: NSObject, ObservableObject {
             restoreDeviceAfterRecording()
             return
         }
+        guard writer.status == .writing, isWritingSessionStarted else {
+            writer.cancelWriting()
+            cleanupWriterState()
+            sessionQueue.async { self.restoreDeviceAfterRecording() }
+            presentStatusMessage("Recording stopped before the first video frame was saved.")
+            return
+        }
 
         videoWriterInput?.markAsFinished()
         audioWriterInput?.markAsFinished()
@@ -3947,6 +4111,10 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func handleWriterFailureIfNeeded(_ error: Error?) {
         guard let error else { return }
+        writerRecordingRequested = false
+        pendingWriterURL = nil
+        let message = (error as? CameraConfigurationError)?.message ?? error.localizedDescription
+        recordingLogger.error("Writer failed: \(message, privacy: .public)")
         let failedRecordingURL = currentRecordingURL
 
         sessionQueue.async {
@@ -3964,7 +4132,7 @@ final class CameraManager: NSObject, ObservableObject {
         if let failedRecordingURL {
             removeTemporaryCaptureFile(at: failedRecordingURL)
         }
-        presentStatusMessage("Recording failed: \(error.localizedDescription)")
+        presentStatusMessage("Recording failed: \(message)")
     }
 
     private func purgeTemporaryCaptureFiles() {
@@ -4692,11 +4860,9 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func dispatchPreviewFrameIfNeeded(from sampleBuffer: CMSampleBuffer) {
+        guard !usesSystemPreviewForVideo else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        let isHighLoadRecording = isRecording &&
-            selectedVideoResolution == .uhd4K &&
-            selectedFrameRate >= 120
-        let previewFrameRate = isHighLoadRecording ? 24.0 : (isRecording ? 30.0 : 60.0)
+        let previewFrameRate = isRecording ? 30.0 : 60.0
         let minimumInterval = 1.0 / previewFrameRate
         guard now - lastPreviewFrameDispatchTime >= minimumInterval else { return }
         lastPreviewFrameDispatchTime = now
@@ -4797,12 +4963,26 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
                                    didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
         if output === self.videoDataOutput {
-            self.latestVideoSourceFormatDescription = CMSampleBufferGetFormatDescription(sampleBuffer)
+            self.latestVideoFormatDescription = CMSampleBufferGetFormatDescription(sampleBuffer)
             self.dispatchPreviewFrameIfNeeded(from: sampleBuffer)
             self.syncAutoControlReadbackIfNeeded()
-            self.appendVideoSampleBuffer(sampleBuffer)
+            guard self.isRecording, !self.usesDirectMovieRecording else { return }
+            guard queuedVideoFrameSlots.wait(timeout: .now()) == .success else {
+                writerQueue.async(execute: DispatchWorkItem {
+                    if self.writerRecordingRequested {
+                        self.recordingDiagnostics.writerBackpressureDrops += 1
+                    }
+                })
+                return
+            }
+            writerQueue.async(execute: DispatchWorkItem {
+                self.appendVideoSampleBuffer(sampleBuffer)
+                self.queuedVideoFrameSlots.signal()
+            })
         } else if output === self.audioDataOutput {
-            self.appendAudioSampleBuffer(sampleBuffer)
+            writerQueue.async(execute: DispatchWorkItem {
+                self.appendAudioSampleBuffer(sampleBuffer)
+            })
         }
     }
 
@@ -4810,7 +4990,9 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
                                    didDrop sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
         guard output === self.videoDataOutput else { return }
-        self.recordDroppedVideoFrame(sampleBuffer)
+        writerQueue.async(execute: DispatchWorkItem {
+            self.recordDroppedVideoFrame(sampleBuffer)
+        })
     }
 }
 

@@ -2232,15 +2232,27 @@ private struct CameraSettingsView: View {
 
     private var videoSettingsRows: some View {
         VStack(spacing: 0) {
-            settingsRow(title: "Preview") {
-                optionStrip {
-                    ForEach(PreviewLookMode.allCases) { mode in
-                        selectionButton(
-                            title: mode.title,
-                            isSelected: cameraManager.previewLookMode == mode
-                        ) {
-                            cameraManager.selectPreviewLookMode(mode)
+            settingsRow(
+                title: "Preview",
+                detail: cameraManager.usesSystemPreviewForVideo ? "4K/120: Log only" : nil
+            ) {
+                VStack(alignment: .leading, spacing: 6) {
+                    optionStrip {
+                        ForEach(PreviewLookMode.allCases) { mode in
+                            selectionButton(
+                                title: mode.title,
+                                isSelected: cameraManager.effectivePreviewLookMode == mode
+                            ) {
+                                cameraManager.selectPreviewLookMode(mode)
+                            }
+                            .disabled(cameraManager.usesSystemPreviewForVideo && mode == .rec709)
+                            .opacity(cameraManager.usesSystemPreviewForVideo && mode == .rec709 ? 0.45 : 1)
                         }
+                    }
+                    if cameraManager.usesSystemPreviewForVideo {
+                        Text("Rec.709 monitoring is temporarily unavailable at 4K/120 in Rawlight.")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(AppTheme.textSecondary)
                     }
                 }
             }
