@@ -96,7 +96,11 @@ final class MetalPreviewRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         guard let drawable = view.currentDrawable else { return }
 
-        let (frame, lookMode) = stateQueue.sync { (latestFrame, previewLookMode) }
+        let (frame, lookMode) = stateQueue.sync { () -> (PreviewFrame?, PreviewLookMode) in
+            let frame = latestFrame
+            latestFrame = nil
+            return (frame, previewLookMode)
+        }
         guard let frame,
               let renderRequest = makeRenderRequest(for: frame, lookMode: lookMode),
               let commandBuffer = commandQueue.makeCommandBuffer() else {

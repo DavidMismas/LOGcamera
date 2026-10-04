@@ -74,6 +74,9 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
     func setEnabled(_ isEnabled: Bool) {
         stateQueue.async {
             self.isEnabled = isEnabled
+            if !isEnabled {
+                self.latestFrame = nil
+            }
         }
     }
 
@@ -97,7 +100,9 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
 
     func enqueue(_ frame: PreviewFrame) {
         stateQueue.async {
-            self.latestFrame = frame
+            if self.isEnabled {
+                self.latestFrame = frame
+            }
         }
     }
 
@@ -113,28 +118,28 @@ final class ZebraOverlayRenderer: NSObject, MTKViewDelegate {
             return
         }
 
-        let frame = stateQueue.sync { latestFrame }
-        let overlayEnabled = stateQueue.sync { isEnabled }
-        let threshold = stateQueue.sync { self.threshold }
-        let channel = stateQueue.sync { self.channel }
-        let previewLookMode = stateQueue.sync { self.previewLookMode }
+        let snapshot = stateQueue.sync {
+            let frame = latestFrame
+            latestFrame = nil
+            return (
+                frame: frame,
+                overlayEnabled: isEnabled,
+                threshold: threshold,
+                channel: channel,
+                lookMode: previewLookMode
+            )
+        }
+        guard snapshot.overlayEnabled, let frame = snapshot.frame else { return }
         let bounds = CGRect(origin: .zero, size: view.drawableSize)
         guard bounds.width > 0, bounds.height > 0 else { return }
 
-        let outputImage: CIImage
-        if overlayEnabled,
-           let frame,
-           let zebraImage = makeZebraImage(
+        guard let outputImage = makeZebraImage(
             for: frame,
             in: bounds,
-            threshold: threshold,
-            channel: channel,
-            lookMode: previewLookMode
-           ) {
-            outputImage = zebraImage
-        } else {
-            outputImage = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: bounds)
-        }
+            threshold: snapshot.threshold,
+            channel: snapshot.channel,
+            lookMode: snapshot.lookMode
+        ) else { return }
 
         context.render(
             outputImage,
@@ -319,6 +324,9 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
     func setEnabled(_ isEnabled: Bool) {
         stateQueue.async {
             self.isEnabled = isEnabled
+            if !isEnabled {
+                self.latestFrame = nil
+            }
         }
     }
 
@@ -336,7 +344,9 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
 
     func enqueue(_ frame: PreviewFrame) {
         stateQueue.async {
-            self.latestFrame = frame
+            if self.isEnabled {
+                self.latestFrame = frame
+            }
         }
     }
 
@@ -353,29 +363,25 @@ final class FocusPeakingOverlayRenderer: NSObject, MTKViewDelegate {
         }
 
         let snapshot = stateQueue.sync {
-            (
-                frame: latestFrame,
+            let frame = latestFrame
+            latestFrame = nil
+            return (
+                frame: frame,
                 overlayEnabled: isEnabled,
                 sensitivity: sensitivityPercent,
                 lookMode: previewLookMode
             )
         }
+        guard snapshot.overlayEnabled, let frame = snapshot.frame else { return }
         let bounds = CGRect(origin: .zero, size: view.drawableSize)
         guard bounds.width > 0, bounds.height > 0 else { return }
 
-        let outputImage: CIImage
-        if snapshot.overlayEnabled,
-           let frame = snapshot.frame,
-           let peakingImage = makePeakingImage(
+        guard let outputImage = makePeakingImage(
             for: frame,
             in: bounds,
             sensitivityPercent: snapshot.sensitivity,
             lookMode: snapshot.lookMode
-           ) {
-            outputImage = peakingImage
-        } else {
-            outputImage = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: bounds)
-        }
+        ) else { return }
 
         context.render(
             outputImage,

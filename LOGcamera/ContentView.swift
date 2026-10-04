@@ -2389,25 +2389,25 @@ private struct CameraSettingsView: View {
     private var bitrateRow: some View {
         settingsRow(
             title: "Bitrate",
-            detail: cameraManager.allowsCustomBitrate ? nil : "Codec managed",
-            isEnabled: cameraManager.allowsCustomBitrate
+            detail: cameraManager.allowsCustomBitrate ? nil : "Managed by \(cameraManager.selectedVideoCodec.title)"
         ) {
-            optionStrip {
-                ForEach(CameraManager.supportedBitratesMbps, id: \.self) { bitrate in
-                    selectionButton(
-                        title: String(format: "%.0f Mb/s", bitrate),
-                        isSelected: cameraManager.recordingBitrateMbps == bitrate
-                    ) {
-                        cameraManager.setRecordingBitrateMbps(bitrate)
+            if cameraManager.allowsCustomBitrate {
+                optionStrip {
+                    ForEach(CameraManager.supportedBitratesMbps, id: \.self) { bitrate in
+                        selectionButton(
+                            title: String(format: "%.0f Mb/s", bitrate),
+                            isSelected: cameraManager.recordingBitrateMbps == bitrate
+                        ) {
+                            cameraManager.setRecordingBitrateMbps(bitrate)
+                        }
                     }
-                }
 
-                actionChip(title: cameraManager.usesCustomBitrate ? "Auto" : "Default") {
-                    cameraManager.resetRecordingBitrateToDefault()
+                    actionChip(title: cameraManager.usesCustomBitrate ? "Auto" : "Default") {
+                        cameraManager.resetRecordingBitrateToDefault()
+                    }
                 }
             }
         }
-        .disabled(!cameraManager.allowsCustomBitrate)
     }
 
     private var audioRows: some View {
